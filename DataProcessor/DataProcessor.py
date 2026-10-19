@@ -38,6 +38,17 @@ class MouseEvent:
 
 
 @dataclass
+class CursorSnapshot:
+    """Cursor context carried forward, including through motionless frames."""
+
+    timestamp: int
+    locked: Optional[bool] = None
+    visible: Optional[bool] = None
+    position: Optional[Tuple[int, int]] = None
+    bounds: Optional[Tuple[int, int, int, int]] = None
+
+
+@dataclass
 class ActionChunk:
     """One 33ms chunk of actions"""
 
@@ -52,6 +63,7 @@ class ActionFrame:
     """200ms (6 chunks) of actions at 5fps"""
 
     chunks: List[ActionChunk]
+    absolute_position: Optional[Tuple[int, int]] = None
 
     def to_lumine_format(self) -> str:
         # Format: <|action_start|>X Y Z ; k1 k2 k3 ; k4 k5 ; k6 ; k7 ; k8 ; k9 k10<|action_end|>
@@ -74,14 +86,34 @@ class ActionFrame:
             keys = chunk.keys[:4]
             key_parts.append(" ".join(keys))
 
-        return f"<|action_start|>{dx} {dy} {z} ; {' ; '.join(key_parts)}<|action_end|>"
+        # Absolute coordinates are already scaled/clamped to the output frame.
+        # Only the X/Y prefix changes; scroll and all six key chunks stay intact.
+        movement = f"{dx} {dy}"
+        if self.absolute_position is not None:
+            x, y = self.absolute_position
+            movement = f"<use_absolute> {x} {y}"
+        return f"<|action_start|>{movement} {z} ; {' ; '.join(key_parts)}<|action_end|>"
 
 
 class KeyRecorderParser:
     """Parse KeyRecorder log file"""
 
-    def __init__(self, log_path: str):
+    def __init__(
+        self, log_path: str, output_width: int = 1280, output_height: int = 720,
+        source_bounds: Optional[Tuple[int, int, int, int]] = None,
+    ):
+        if output_width <= 0 or output_height <= 0:
+            raise ValueError("Output dimensions must be positive")
+        if source_bounds is not None and (source_bounds[2] <= 0 or source_bounds[3] <= 0):
+            raise ValueError("Source dimensions must be positive")
         self.log_path = log_path
+        self.output_width = output_width
+        self.output_height = output_height
+        self.source_bounds = source_bounds
+        self.cursor_snapshots: List[CursorSnapshot] = []
+        self.cursor_timestamps: List[int] = []
+        self.key_timestamps: List[int] = []
+        self.mouse_timestamps: List[int] = []
         self.key_chunks: List[KeyChunkEvent] = []
         self.mouse_events: List[MouseEvent] = []
         self.start_timestamp: Optional[int] = None
@@ -96,6 +128,7 @@ class KeyRecorderParser:
             return self
 
         pause_start = None
+        cursor_updates = []
         with open(self.log_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -135,6 +168,12 @@ class KeyRecorderParser:
                     x = int(parts[2]) if len(parts) > 2 else 0
                     y = int(parts[3]) if len(parts) > 3 else 0
                     self.mouse_events.append(MouseEvent(timestamp, "ABS", x=x, y=y))
+                    cursor_updates.append((timestamp, "ABS", (x, y)))
+
+                elif event_type == "SCREEN" and len(parts) >= 6:
+                    bounds = tuple(int(v) for v in parts[2:6])
+                    if bounds[2] > 0 and bounds[3] > 0:
+                        cursor_updates.append((timestamp, "SCREEN", bounds))
 
                 elif event_type == "MOUSE_REL":
                     dx = int(parts[2]) if len(parts) > 2 else 0
@@ -148,7 +187,9 @@ class KeyRecorderParser:
                         )
 
                 elif event_type == "MOUSE":
-                    if len(parts) > 2 and parts[2] == "WHEEL":
+                    if len(parts) > 2 and parts[2] in ("LOCK", "UNLOCK", "SHOW", "HIDE"):
+                        cursor_updates.append((timestamp, parts[2], None))
+                    elif len(parts) > 2 and parts[2] == "WHEEL":
                         delta = int(parts[3]) if len(parts) > 3 else 0
                         self.mouse_events.append(
                             MouseEvent(timestamp, "WHEEL", delta=delta)
@@ -162,6 +203,22 @@ class KeyRecorderParser:
         # Sort by timestamp
         self.key_chunks.sort(key=lambda x: x.timestamp)
         self.mouse_events.sort(key=lambda x: x.timestamp)
+
+        # Stable ordering retains multiple same-timestamp state/position events.
+        locked = visible = position = bounds = None
+        for timestamp, kind, value in sorted(cursor_updates, key=lambda e: e[0]):
+            if kind == "ABS":
+                position = value
+            elif kind == "SCREEN":
+                bounds = value
+            elif kind in ("LOCK", "UNLOCK"):
+                locked = kind == "LOCK"
+            else:
+                visible = kind == "SHOW"
+            self.cursor_snapshots.append(
+                CursorSnapshot(timestamp, locked, visible, position, bounds)
+            )
+        self.cursor_timestamps = [e.timestamp for e in self.cursor_snapshots]
 
         # Precompute timestamps for binary search
         self.key_timestamps = [e.timestamp for e in self.key_chunks]
@@ -179,18 +236,40 @@ class KeyRecorderParser:
                 return True
         return False
 
+    def get_absolute_position(self, timestamp: int) -> Optional[Tuple[int, int]]:
+        """Use the last known menu target at/before timestamp, never future data.
+
+        Locked or hidden always means relative camera mode. Logs without mode
+        events remain relative for compatibility. Missing capture geometry also
+        stays relative rather than silently producing incorrect menu targets.
+        """
+        idx = bisect.bisect_right(self.cursor_timestamps, timestamp) - 1
+        if idx < 0:
+            return None
+        state = self.cursor_snapshots[idx]
+        menu = (state.locked is False or state.visible is True)
+        if not menu or state.locked is True or state.visible is False or state.position is None:
+            return None
+        bounds = self.source_bounds or state.bounds
+        if bounds is None:
+            return None
+        left, top, width, height = bounds
+        x, y = state.position
+        # Pixel positions, not percentages. Right/bottom are exclusive.
+        x = max(0, min(self.output_width - 1, int((x - left) * self.output_width / width)))
+        y = max(0, min(self.output_height - 1, int((y - top) * self.output_height / height)))
+        return x, y
+
     def get_actions_at_time(
         self, start_time: int, duration_ms: int = 200
     ) -> ActionFrame:
         """Get actions for a time window (default 200ms for 1 frame at 5fps)"""
         end_time = start_time + (duration_ms * 10000)
 
-        chunk_duration_100ns = int((duration_ms / 6) * 10000)
-
         chunks = []
         for i in range(6):
-            c_start = start_time + (i * chunk_duration_100ns)
-            c_end = c_start + chunk_duration_100ns
+            c_start = start_time + (i * duration_ms * 10000 // 6)
+            c_end = start_time + ((i + 1) * duration_ms * 10000 // 6)
 
             # Binary search for mouse events in range
             mouse_start_idx = bisect.bisect_left(self.mouse_timestamps, c_start)
@@ -223,7 +302,11 @@ class KeyRecorderParser:
 
             chunks.append(ActionChunk(dx=dx, dy=dy, scroll=scroll, keys=keys))
 
-        return ActionFrame(chunks=chunks)
+        # One movement prefix per 200ms action; the final known cursor mode and
+        # target in this half-open window win if the mode changes mid-window.
+        return ActionFrame(
+            chunks=chunks, absolute_position=self.get_absolute_position(end_time - 1)
+        )
 
 
 class VideoProcessor:
@@ -391,12 +474,27 @@ def main():
     parser.add_argument("--fps", type=int, default=5, help="FPS (default: 5)")
     parser.add_argument("--width", type=int, default=1280, help="Width (default: 1280)")
     parser.add_argument("--height", type=int, default=720, help="Height (default: 720)")
+    parser.add_argument("--source-width", type=int, help="Recorded screen/crop width in desktop pixels")
+    parser.add_argument("--source-height", type=int, help="Recorded screen/crop height in desktop pixels")
+    parser.add_argument("--source-left", type=int, default=0, help="Recorded crop desktop X origin")
+    parser.add_argument("--source-top", type=int, default=0, help="Recorded crop desktop Y origin")
     parser.add_argument(
         "--offset", type=int, default=0, help="Timestamp offset (100ns)"
     )
     parser.add_argument("--skip-video", action="store_true", help="Skip extraction")
 
     args = parser.parse_args()
+    if (args.source_width is None) != (args.source_height is None):
+        parser.error("--source-width and --source-height must be used together")
+    if args.width <= 0 or args.height <= 0:
+        parser.error("--width and --height must be positive")
+    source_bounds = None
+    if args.source_width is not None:
+        if args.source_width <= 0 or args.source_height <= 0:
+            parser.error("Source dimensions must be positive")
+        source_bounds = (args.source_left, args.source_top, args.source_width, args.source_height)
+    elif args.source_left != 0 or args.source_top != 0:
+        parser.error("A crop origin requires --source-width and --source-height")
 
     log_path = Path(args.log)
     video_path = Path(args.video)
@@ -419,7 +517,10 @@ def main():
         print(f"\nProcessing: {log_f.name}")
         output_dir = output_base / log_f.stem
 
-        parser_obj = KeyRecorderParser(str(log_f)).parse()
+        parser_obj = KeyRecorderParser(
+            str(log_f), output_width=args.width, output_height=args.height,
+            source_bounds=source_bounds,
+        ).parse()
 
         video_proc = VideoProcessor(
             str(video_f),
