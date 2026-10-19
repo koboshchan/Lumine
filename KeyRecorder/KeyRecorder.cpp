@@ -11,6 +11,7 @@
 #include <mutex>
 #include <sstream>
 #include <iomanip>
+#include <cstdint>
 
 #ifndef QWORD
 typedef unsigned long long QWORD;
@@ -23,11 +24,19 @@ std::atomic<bool> g_paused(false);
 HHOOK g_keyboardHook = nullptr;
 bool g_cursorVisible = true;
 bool g_isClipped = false;
+bool g_cursorStateKnown = false;
 int g_lastMouseX = 0;
 int g_lastMouseY = 0;
 
-std::vector<RAWINPUT> g_pendingRawInput;
-std::mutex g_rawInputMutex;
+// Backward-compatible CSV, FILETIME timestamps. Each raw mouse event emits
+// MOUSE_REL,dx,dy (raw device counts for relative devices) and MOUSE_ABS,x,y
+// (physical desktop pixels from GetCursorPos), even when locked or stationary.
+// Absolute-input devices use successive cursor pixel differences for REL.
+// MOUSE,LOCK|UNLOCK and MOUSE,SHOW|HIDE are initial/resume snapshots plus
+// transitions, sampled per raw event and at 30Hz even without mouse movement.
+// SCREEN,left,top,width,height describes the recorded primary desktop in pixels.
+void CheckCursorState(int64_t timestamp);
+void ProcessMouseEvent(const RAWINPUT& raw, int64_t timestamp);
 
 // Key state tracking
 bool g_keysHeld[256] = { false };
@@ -128,6 +137,7 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
         if (kbStruct->vkCode == VK_F11 && isDown) {
             if (g_paused) {
+                g_cursorStateKnown = false;
                 g_paused = false;
                 int64_t ts = GetHighResTimestamp();
                 std::lock_guard<std::mutex> lock(g_mutex);
@@ -160,8 +170,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buffer.data(), &cbSize, sizeof(RAWINPUTHEADER)) == cbSize) {
                 RAWINPUT* pRawInput = reinterpret_cast<RAWINPUT*>(buffer.data());
                 if (pRawInput->header.dwType == RIM_TYPEMOUSE) {
-                    std::lock_guard<std::mutex> lock(g_rawInputMutex);
-                    g_pendingRawInput.push_back(*pRawInput);
+                    const int64_t timestamp = GetHighResTimestamp();
+                    CheckCursorState(timestamp);
+                    ProcessMouseEvent(*pRawInput, timestamp);
                 }
             }
         }
@@ -169,98 +180,98 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-void ProcessRawInput(int64_t timestamp) {
-    std::vector<RAWINPUT> rawCopy;
-    {
-        std::lock_guard<std::mutex> lock(g_rawInputMutex);
-        if (g_pendingRawInput.empty()) return;
-        rawCopy = std::move(g_pendingRawInput);
-        g_pendingRawInput.clear();
-    }
-
-    // Skip processing if paused
+void ProcessMouseEvent(const RAWINPUT& raw, int64_t timestamp) {
     if (g_paused) return;
 
-    long totalDx = 0;
-    long totalDy = 0;
-    bool moved = false;
-
-    for (const RAWINPUT& raw : rawCopy) {
-        if (raw.header.dwType != RIM_TYPEMOUSE) continue;
-
-        if (!(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
-            totalDx += raw.data.mouse.lLastX;
-            totalDy += raw.data.mouse.lLastY;
-            if (raw.data.mouse.lLastX != 0 || raw.data.mouse.lLastY != 0) moved = true;
-        }
-
-        USHORT btnFlags = raw.data.mouse.usButtonFlags;
-        if (btnFlags & RI_MOUSE_LEFT_BUTTON_DOWN)   g_mouseHeld[0] = true;
-        if (btnFlags & RI_MOUSE_LEFT_BUTTON_UP)     g_mouseHeld[0] = false;
-        if (btnFlags & RI_MOUSE_RIGHT_BUTTON_DOWN)  g_mouseHeld[1] = true;
-        if (btnFlags & RI_MOUSE_RIGHT_BUTTON_UP)    g_mouseHeld[1] = false;
-        if (btnFlags & RI_MOUSE_MIDDLE_BUTTON_DOWN) g_mouseHeld[2] = true;
-        if (btnFlags & RI_MOUSE_MIDDLE_BUTTON_UP)   g_mouseHeld[2] = false;
-        if (btnFlags & RI_MOUSE_BUTTON_4_DOWN)      g_mouseHeld[3] = true;
-        if (btnFlags & RI_MOUSE_BUTTON_4_UP)        g_mouseHeld[3] = false;
-        if (btnFlags & RI_MOUSE_BUTTON_5_DOWN)      g_mouseHeld[4] = true;
-        if (btnFlags & RI_MOUSE_BUTTON_5_UP)        g_mouseHeld[4] = false;
-
-        short wheelDelta = (short)HIWORD(raw.data.mouse.usButtonData);
-        if (wheelDelta != 0) {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            g_logFile << timestamp << ",MOUSE,WHEEL," << wheelDelta << "\n";
-        }
+    POINT p = {};
+    const bool havePosition = GetCursorPos(&p) != FALSE;
+    const bool absolute = (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0;
+    const long dx = absolute ? (havePosition ? p.x - g_lastMouseX : 0) : raw.data.mouse.lLastX;
+    const long dy = absolute ? (havePosition ? p.y - g_lastMouseY : 0) : raw.data.mouse.lLastY;
+    if (havePosition) {
+        g_lastMouseX = p.x;
+        g_lastMouseY = p.y;
     }
 
-    if (moved) {
-        if (g_isClipped) {
-            // pass
-        } else {
-            POINT p;
-            GetCursorPos(&p);
-            g_lastMouseX = p.x;
-            g_lastMouseY = p.y;
-            std::lock_guard<std::mutex> lock(g_mutex);
-            g_logFile << timestamp << ",MOUSE_ABS," << g_lastMouseX << "," << g_lastMouseY << "\n";
-        }
-        std::lock_guard<std::mutex> lock(g_mutex);
-        g_logFile << timestamp << ",MOUSE_REL," << totalDx << "," << totalDy << "\n";
+    USHORT btnFlags = raw.data.mouse.usButtonFlags;
+    if (btnFlags & RI_MOUSE_LEFT_BUTTON_DOWN)   g_mouseHeld[0] = true;
+    if (btnFlags & RI_MOUSE_LEFT_BUTTON_UP)     g_mouseHeld[0] = false;
+    if (btnFlags & RI_MOUSE_RIGHT_BUTTON_DOWN)  g_mouseHeld[1] = true;
+    if (btnFlags & RI_MOUSE_RIGHT_BUTTON_UP)    g_mouseHeld[1] = false;
+    if (btnFlags & RI_MOUSE_MIDDLE_BUTTON_DOWN) g_mouseHeld[2] = true;
+    if (btnFlags & RI_MOUSE_MIDDLE_BUTTON_UP)   g_mouseHeld[2] = false;
+    if (btnFlags & RI_MOUSE_BUTTON_4_DOWN)      g_mouseHeld[3] = true;
+    if (btnFlags & RI_MOUSE_BUTTON_4_UP)        g_mouseHeld[3] = false;
+    if (btnFlags & RI_MOUSE_BUTTON_5_DOWN)      g_mouseHeld[4] = true;
+    if (btnFlags & RI_MOUSE_BUTTON_5_UP)        g_mouseHeld[4] = false;
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_logFile << timestamp << ",MOUSE_REL," << dx << "," << dy << "\n";
+    // If the desktop is inaccessible, retain REL/buttons/wheel but do not
+    // fabricate an absolute coordinate.
+    if (havePosition) {
+        g_logFile << timestamp << ",MOUSE_ABS," << p.x << "," << p.y << "\n";
+    }
+    // usButtonData already IS the signed 16-bit wheel delta, not its HIWORD.
+    if (btnFlags & RI_MOUSE_WHEEL) {
+        const short wheelDelta = static_cast<short>(raw.data.mouse.usButtonData);
+        g_logFile << timestamp << ",MOUSE,WHEEL," << wheelDelta << "\n";
     }
 }
 
 void CheckCursorState(int64_t timestamp) {
+    if (g_paused) return;
+    const bool initial = !g_cursorStateKnown;
+    bool changed = false;
+    bool haveVisibility = false;
+    bool haveClip = false;
     CURSORINFO ci = {sizeof(CURSORINFO)};
     if (GetCursorInfo(&ci)) {
-        bool visible = (ci.flags & (CURSOR_SHOWING | CURSOR_SUPPRESSED)) != 0;
-        if (visible != g_cursorVisible) {
+        // CURSOR_SUPPRESSED means hidden by touch/pen, not visible.
+        const bool visible = (ci.flags & CURSOR_SHOWING) != 0 &&
+                             (ci.flags & CURSOR_SUPPRESSED) == 0;
+        haveVisibility = true;
+        if (initial || visible != g_cursorVisible) {
+            changed = true;
             g_cursorVisible = visible;
             std::lock_guard<std::mutex> lock(g_mutex);
-            if (g_logFile.is_open()) {
-                g_logFile << timestamp << ",MOUSE," << (visible ? "SHOW" : "HIDE") << "\n";
-            }
+            g_logFile << timestamp << ",MOUSE," << (visible ? "SHOW" : "HIDE") << "\n";
         }
     }
-    
+
     RECT clipRect;
     if (GetClipCursor(&clipRect)) {
-        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-        int clipWidth = clipRect.right - clipRect.left;
-        int clipHeight = clipRect.bottom - clipRect.top;
-        bool clipped = (clipWidth < screenWidth || clipHeight < screenHeight);
-        if (clipped != g_isClipped) {
+        // An unclipped cursor spans the VIRTUAL desktop, which may have a
+        // negative origin or several monitors. Compare all four edges.
+        const int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        const int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        const int right = left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        const int bottom = top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        const bool clipped = clipRect.left > left || clipRect.top > top ||
+                             clipRect.right < right || clipRect.bottom < bottom;
+        haveClip = true;
+        if (initial || clipped != g_isClipped) {
+            changed = true;
             g_isClipped = clipped;
             std::lock_guard<std::mutex> lock(g_mutex);
-            if (g_logFile.is_open()) {
-                g_logFile << timestamp << ",MOUSE," << (clipped ? "LOCK" : "UNLOCK") << "\n";
-            }
+            g_logFile << timestamp << ",MOUSE," << (clipped ? "LOCK" : "UNLOCK") << "\n";
         }
-    } else if (g_isClipped) {
-        g_isClipped = false;
-        std::lock_guard<std::mutex> lock(g_mutex);
-        if (g_logFile.is_open()) {
-            g_logFile << timestamp << ",MOUSE,UNLOCK\n";
+    }
+    // On query failure retain state and retry; failure does not mean unlocked.
+    if (changed || initial) {
+        POINT p;
+        if (GetCursorPos(&p)) {
+            g_lastMouseX = p.x;
+            g_lastMouseY = p.y;
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (initial) {
+                g_logFile << timestamp << ",SCREEN,0,0,"
+                          << GetSystemMetrics(SM_CXSCREEN) << ","
+                          << GetSystemMetrics(SM_CYSCREEN) << "\n";
+            }
+            // A game can warp/show the menu cursor without a raw input event.
+            g_logFile << timestamp << ",MOUSE_ABS," << p.x << "," << p.y << "\n";
+            if (haveVisibility && haveClip) g_cursorStateKnown = true;
         }
     }
 }
@@ -301,6 +312,8 @@ int main(int argc, char* argv[]) {
     std::cout << "  Press F5 to stop recording" << std::endl;
     std::cout << std::endl;
 
+    // Keep GetCursorPos and SCREEN in physical pixels on high-DPI displays.
+    SetProcessDPIAware();
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
     g_logFile.open(outputFile, std::ios::out);
@@ -315,6 +328,7 @@ int main(int argc, char* argv[]) {
     g_logFile << "#" << std::endl;
     g_logFile << "# Events:" << std::endl;
     g_logFile << "#   KEY_CHUNK,token1 token2 ..." << std::endl;
+    g_logFile << "#   SCREEN,left,top,width,height (primary desktop pixels)" << std::endl;
     g_logFile << "#   MOUSE_ABS,x,y" << std::endl;
     g_logFile << "#   MOUSE_REL,dx,dy" << std::endl;
     g_logFile << "#   MOUSE,WHEEL,delta" << std::endl;
@@ -360,6 +374,8 @@ int main(int argc, char* argv[]) {
         g_lastMouseY = cursorPos.y;
     }
 
+    CheckCursorState(GetHighResTimestamp());
+
     std::cout << "Recording started... (Press F5 to stop)" << std::endl;
 
     using namespace std::chrono;
@@ -384,8 +400,8 @@ int main(int argc, char* argv[]) {
         if (nowSteady >= nextTickTime) {
             int64_t highResTs = GetHighResTimestamp();
             
-            // 1. Process Mouse
-            ProcessRawInput(highResTs);
+            // Poll transitions even when no raw mouse events arrive.
+            CheckCursorState(highResTs);
             
             // Skip KEY_CHUNK and cursor state logging when paused
             if (!g_paused) {
@@ -417,10 +433,8 @@ int main(int argc, char* argv[]) {
                     std::lock_guard<std::mutex> lock(g_mutex);
                     g_logFile << highResTs << ",KEY_CHUNK," << keys << "\n";
                 }
-
-                CheckCursorState(highResTs);
             }
-            
+
             nextTickTime += tickDuration;
         }
     }
