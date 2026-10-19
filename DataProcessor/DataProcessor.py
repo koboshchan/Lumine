@@ -62,9 +62,11 @@ class ActionFrame:
         total_dy = sum(c.dy for c in self.chunks)
         total_scroll = sum(c.scroll for c in self.chunks)
 
-        dx = int(round(total_dx / 5) * 5)
-        dy = int(round(total_dy / 4) * 4)
-        z = int(total_scroll)
+        # Paper: dX/dY integers in (-1000, 1000), scroll steps in [-5, 5].
+        # Windows WHEEL_DELTA is 120 per notch, so convert raw delta to steps.
+        dx = max(-995, min(995, int(round(total_dx / 5) * 5)))
+        dy = max(-996, min(996, int(round(total_dy / 4) * 4)))
+        z = max(-5, min(5, int(round(total_scroll / 120))))
 
         key_parts = []
         for chunk in self.chunks:
