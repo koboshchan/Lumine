@@ -29,7 +29,11 @@ data:
     num_workers: 2
     drop_last: false
   mm_configs:
-    image_max_pixels: 262144
+    # OBS records 1280x720 at 30 FPS. Preserve pixels; pad to the patch grid.
+    image_frame_width: 1280
+    image_frame_height: 720
+    image_min_pixels: 921600
+    image_max_pixels: 921600
     video_max_pixels: 262144
     # Qwen3-VL dynamic video budget, matching the upstream Qwen3-VL example.
     video_total_pixels: 5780275
