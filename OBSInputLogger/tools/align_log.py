@@ -8,12 +8,44 @@ from __future__ import annotations
 import argparse
 import bisect
 import os
+import json
+import subprocess
+from decimal import Decimal
 from pathlib import Path
 
 FILETIME_EPOCH = 116444736000000000
 
 
-def align(source: Path, destination: Path, video_start_filetime: int) -> int:
+def muxed_pts(video: Path) -> list[int]:
+    """Read actual container presentation timestamps, preserving decode order."""
+    result = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_packets",
+        "-show_entries", "packet=pts_time", "-of", "json", str(video),
+    ], check=True, capture_output=True, text=True)
+    packets = json.loads(result.stdout)["packets"]
+    if not packets or any("pts_time" not in packet for packet in packets):
+        raise ValueError("Video has no usable packet presentation timestamps")
+    return [int(Decimal(packet["pts_time"]) * 10_000_000) for packet in packets]
+
+
+def reconcile_frames(frames, packet_pts):
+    # Packet callbacks run before the muxer, which can shift all timestamps to
+    # avoid negative DTS and reject a final packet after its stop boundary.
+    # Standard unsplit muxers retain decode order. Refuse anything other than
+    # a single constant translation plus timebase rounding (up to 1 ms).
+    if not packet_pts or len(packet_pts) > len(frames):
+        raise ValueError("Video/log packet count mismatch")
+    paired = list(zip(frames, packet_pts))
+    shifts = [actual - frame[1] for frame, actual in paired]
+    if max(shifts) - min(shifts) > 10_000:
+        raise ValueError("Video/log packet order or timestamp spacing mismatch")
+    if len(frames) - len(packet_pts) > 16:
+        raise ValueError("Too many logged packets missing from video")
+    return [(frame[0], actual) for frame, actual in paired]
+
+
+def align(source: Path, destination: Path, video_start_filetime: int,
+          packet_pts: list[int] | None = None) -> int:
     if source.resolve() == destination.resolve():
         raise ValueError("The aligned destination must not replace the raw sidecar")
     # First pass retains only per-frame timing; input events are streamed on pass 2.
@@ -59,6 +91,8 @@ def align(source: Path, destination: Path, video_start_filetime: int) -> int:
         raise ValueError("Missing clean completion footer; capture may be truncated")
     if not frames or len(origin) != 2:
         raise ValueError("No usable OBS frame timing/origin in this log")
+    if packet_pts is not None:
+        frames = reconcile_frames(frames, packet_pts)
     frames.sort()
     if any(b[0] <= a[0] or b[1] <= a[1] for a, b in zip(frames, frames[1:])):
         raise ValueError("Non-monotonic/duplicate frame timing; unsupported recording mode")
@@ -152,7 +186,7 @@ def main() -> None:
         origin = FILETIME_EPOCH + args.video.stat().st_ctime_ns // 100
     source = args.log or args.video.with_suffix(".log")
     destination = args.output or args.video.with_suffix(".aligned.log")
-    count = align(source, destination, origin)
+    count = align(source, destination, origin, muxed_pts(args.video))
     print(f"Wrote {count} events to {destination}")
 
 

@@ -33,6 +33,16 @@ class AlignmentTest(unittest.TestCase):
             count = align_log.align(source, output, VIDEO)
             return count, output.read_text()
 
+    def test_muxed_offset_applied_to_input_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, output = Path(temp) / "raw.log", Path(temp) / "aligned.log"
+            source.write_text(self.fixture())
+            Path(str(source) + ".complete").write_text(
+                f"LUMINE_COMPLETE_V1 {source.stat().st_size}\n")
+            align_log.align(source, output, VIDEO, [440000, 770000, 1110000])
+            text = output.read_text()
+            self.assertIn(f"{VIDEO + 450000},MOUSE_REL,8,-3", text)
+
     def test_pts_and_both_mouse_modes(self):
         count, text = self.run_alignment(self.fixture())
         self.assertEqual(count, 4)
