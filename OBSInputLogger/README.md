@@ -52,6 +52,15 @@ Verification
 python -m unittest discover -s OBSInputLogger/tests -v
 ~~~
 
+The native filename regression test can also be run in an x64 developer terminal:
+
+~~~powershell
+cl /std:c++17 /EHsc OBSInputLogger/tests/test_recording_path.cpp /Fe:recording-path-test.exe
+.\recording-path-test.exe
+~~~
+
+It checks standard muxer filenames, separate sidecars across successive recordings, settings lifetime, and rejection of missing, relative, directory and unsupported output paths. The plugin reads the active output's `path` setting; OBS 32's misleadingly named `obs_frontend_get_current_record_output_path()` returns the configured directory, not the video filename.
+
 Sixteen alignment tests cover emitted header parsing, both mouse modes, B-frame packet reordering, rational frame timing, pause gaps, authoritative pause boundaries, final-frame cutoff, initial state, missing composition time, truncated/error logs, completion artifacts, backwards timestamps and overwrite protection.
 
 The C++ source has been compiled and linked as an x64 Windows DLL with MSVC 19.50 against OBS 32 public headers and actual installed OBS DLL exports. The normal CMake build is also checked against those imported SDK targets. No OBS install or user recording was modified during development. A real OBS recording session is still required to verify runtime loading, start/stop, pause/resume, cursor states and video alignment with your chosen encoder. Build success is not a runtime acceptance result.

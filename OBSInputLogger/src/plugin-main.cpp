@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "recording-path.hpp"
 
 OBS_DECLARE_MODULE()
 MODULE_EXPORT const char *obs_module_description(void)
@@ -529,15 +530,14 @@ void frontend_event(obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_RECORDING_STARTED: {
 		if (!enabled || active) break;
 		obs_output_t *output = obs_frontend_get_recording_output();
-		char *path = obs_frontend_get_current_record_output_path();
-		if (!output || !path || !*path) {
+		std::filesystem::path video_path;
+		if (!lumine_recording_path(output, video_path)) {
 			if (output) obs_output_release(output);
-			bfree(path);
-			show_error(L"No local recording path. Input capture was not started.");
+			blog(LOG_ERROR, "[Lumine] No supported local recording filename in output settings");
+			show_error(L"No supported local video filename. Input capture was not started.");
 			break;
 		}
-		const auto video_path = std::filesystem::u8path(path);
-		bfree(path);
+		blog(LOG_INFO, "[Lumine] Recording sidecar target: %s", video_path.u8string().c_str());
 		try {
 			active = capture.start(output, video_path);
 		} catch (const std::exception &error) {
