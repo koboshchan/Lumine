@@ -5,6 +5,7 @@ import copy
 import hmac
 import importlib
 import io
+import inspect
 import ipaddress
 import json
 import os
@@ -18,6 +19,11 @@ from urllib.parse import urlsplit
 import aiohttp
 from aiohttp import web
 from PIL import Image
+
+try:
+    from .background import MemoryWorker
+except ImportError:  # direct offline test import
+    from background import MemoryWorker
 
 HEX = re.compile(r"[0-9a-f]{32}\Z")
 KEYS = set("Esc Tab Caps Shift Ctrl Alt Space Back Enter Left Up Right Down LB RB MB".split())
@@ -119,6 +125,8 @@ class Config:
     timeout: float = 30
     max_inflight: int = 2
     upstream_key: str = ""
+    memory_timeout: float = 30
+    memory_interval: float = 2
 
     def validate(self):
         if not isinstance(self.secret, str) or not 32 <= len(self.secret.encode()) <= 512 or len(set(self.secret)) < 12 or not self.secret.isascii() or any(ord(c) < 33 or ord(c) > 126 for c in self.secret):
@@ -132,8 +140,10 @@ class Config:
             local = False
         if not local or u.scheme != "http" or u.username or u.password or u.query or u.fragment or u.path != "/v1/chat/completions":
             raise ValueError("upstream must be literal loopback HTTP /v1/chat/completions")
-        if any(v <= 0 for v in (self.ttl, self.max_sessions, self.session_bytes, self.global_bytes, self.max_requests, self.input_tokens, self.timeout, self.max_inflight)):
+        if any(v <= 0 for v in (self.ttl, self.max_sessions, self.session_bytes, self.global_bytes, self.max_requests, self.input_tokens, self.timeout, self.max_inflight, self.memory_timeout)):
             raise ValueError("positive limits required")
+        if self.memory_interval < 0:
+            raise ValueError("memory interval must be nonnegative")
 
 
 @dataclass
@@ -145,9 +155,12 @@ class Session:
     requests: set = field(default_factory=set)
     messages: list = field(default_factory=list)
     compacted: float = 0
+    epoch: str = field(default_factory=lambda: secrets.token_hex(16))
+    memory_snapshot: bytes | None = None
+    memory_enqueued: float = float("-inf")
 
     def size(self):
-        return len(packed([self.state, self.pending, sorted(self.requests), self.messages]))
+        return len(packed([self.state, self.pending, sorted(self.requests), self.messages])) + len(self.memory_snapshot or b"")
 
 
 class Proxy:
@@ -162,22 +175,35 @@ class Proxy:
         self.inflight = 0
         self.reserved_bytes = 0
         self.client = None
+        self.memory_client = None
+        self.memory = MemoryWorker(self)
 
     def expire(self):
         now = self.clock()
         for sid, s in list(self.sessions.items()):
             if not s.busy and now - s.touched >= self.c.ttl:
                 del self.sessions[sid]
+                self.memory.discard(sid)
 
     def total(self):
         return sum(s.size() for s in self.sessions.values())
 
+    async def infer_memory(self, messages):
+        return await self._complete(messages, memory=True)
+
     async def infer(self, messages):
+        return await self._complete(messages, memory=False)
+
+    async def _complete(self, messages, *, memory):
         headers = {"Authorization": "Bearer " + self.c.upstream_key} if self.c.upstream_key else {}
-        async with self.client.post(self.c.upstream, headers=headers, json={
+        payload = {
             "model": self.c.model, "messages": messages, "max_tokens": 512,
             "temperature": 0, "stream": False, "skip_special_tokens": False,
-        }, allow_redirects=False) as r:
+        }
+        if not memory:
+            payload["stop"] = ["<|memory|>"]  # note generation belongs to the worker only
+        client = self.memory_client if memory else self.client
+        async with client.post(self.c.upstream, headers=headers, json=payload, allow_redirects=False) as r:
             if r.status != 200:
                 raise ValueError("upstream status")
             body = bytearray()
@@ -223,7 +249,7 @@ class Proxy:
             self.sessions[sid] = s
         if len(s.requests) >= self.c.max_requests:
             raise web.HTTPConflict(text="session request limit; start a new session")
-        if self.total() + 64 > self.c.global_bytes:
+        if self.total() + self.memory.size + self.reserved_bytes + 64 > self.c.global_bytes:
             raise web.HTTPServiceUnavailable()
         # Burn the id before inference. Never roll this anti-replay metadata back.
         s.requests.add(rid)
@@ -233,10 +259,13 @@ class Proxy:
         try:
             # The builder receives only an acknowledged prediction, never unexecuted output.
             executed = copy.deepcopy(s.pending) if ack is not None else None
+            kwargs = {}
+            if getattr(self.builder, "snapshot_mode", False):
+                kwargs["memory_snapshot"] = s.memory_snapshot
             plan = self.builder(
                 state=copy.deepcopy(s.state), frame=frame, executed=executed,
                 now=self.clock(), protocol=self.c.protocol, max_input_tokens=self.c.input_tokens,
-                allow_compaction=self.clock() - s.compacted >= 30,
+                allow_compaction=False if kwargs else self.clock() - s.compacted >= 30, **kwargs,
             )
             if not isinstance(plan, dict) or not {"state", "messages", "input_tokens", "compacted"} <= set(plan) or set(plan) - {"state", "messages", "input_tokens", "compacted", "pre_compaction_tokens"}:
                 raise ValueError("builder contract")
@@ -245,28 +274,37 @@ class Proxy:
                 raise ValueError("exact processor budget")
             if not isinstance(messages, list) or not messages or not isinstance(plan["state"], dict) or type(plan["compacted"]) is not bool:
                 raise ValueError("builder types")
-            if plan["compacted"] and self.clock() - s.compacted < 30 and not (ack is None and s.pending is not None) and not (type(plan.get("pre_compaction_tokens")) is int and plan["pre_compaction_tokens"] > self.c.input_tokens):
+            if plan["compacted"] and not kwargs and self.clock() - s.compacted < 30 and not (ack is None and s.pending is not None) and not (type(plan.get("pre_compaction_tokens")) is int and plan["pre_compaction_tokens"] > self.c.input_tokens):
                 raise ValueError("early compaction")
             if self.c.protocol == "tiered-v1" and s.messages and not plan["compacted"] and messages[:len(s.messages)] != s.messages:
                 raise ValueError("non-append prefix")
             candidate_bytes = len(packed([plan["state"], messages])) + MAX_COMPLETION + s.size()
-            if candidate_bytes > self.c.session_bytes or self.total() + self.reserved_bytes + candidate_bytes > self.c.global_bytes:
+            if candidate_bytes + self.memory.session_size(sid) > self.c.session_bytes or self.total() + self.reserved_bytes + self.memory.size + candidate_bytes > self.c.global_bytes:
                 raise web.HTTPRequestEntityTooLarge(max_size=self.c.session_bytes, actual_size=candidate_bytes)
             reservation = candidate_bytes
             self.reserved_bytes += reservation
             async with asyncio.timeout(self.c.timeout):
                 completion = await self.infer(messages)
             action, note = parse_completion(completion, self.c.protocol == "tiered-v1")
+            if getattr(self.builder, "snapshot_mode", False):
+                note = None  # never turn action generation into a memory-writing task
             pending = {"action": action, "action_id": secrets.token_hex(16), "note": note,
                        "note_provenance": "model-generated", "frame": frame}
             # Detect a dropped client before committing application state.
             if request.transport is None or request.transport.is_closing():
                 raise asyncio.CancelledError()
             candidate = Session(self.clock(), state=plan["state"], pending=pending,
-                                requests=s.requests, messages=messages, compacted=self.clock() if plan["compacted"] else s.compacted)
-            if candidate.size() > self.c.session_bytes or self.total() - s.size() + candidate.size() > self.c.global_bytes:
+                                requests=s.requests, messages=messages, compacted=self.clock() if plan["compacted"] else s.compacted,
+                                epoch=s.epoch, memory_snapshot=s.memory_snapshot, memory_enqueued=s.memory_enqueued)
+            if candidate.size() + self.memory.session_size(sid) > self.c.session_bytes or self.total() - s.size() + candidate.size() + self.memory.size > self.c.global_bytes:
                 raise web.HTTPServiceUnavailable()
             self.sessions[sid] = candidate
+            try:
+                self.memory.submit(sid, candidate)
+            except Exception:
+                # Admission is best-effort; a background scheduling failure must
+                # not turn an already committed action into an ambiguous error.
+                self.memory.failures += 1
             return web.json_response({"session_id": sid, "action": action,
                                      "action_id": pending["action_id"], "protocol": "lumine-session-v1"})
         except web.HTTPException:
@@ -289,6 +327,7 @@ class Proxy:
         if sid in self.sessions and self.sessions[sid].busy:
             raise web.HTTPConflict()
         # Keep bounded replay tombstones until TTL, preventing reset/retry replay.
+        self.memory.discard(sid)
         if sid in self.sessions:
             s = self.sessions[sid]
             self.sessions[sid] = Session(self.clock(), requests=s.requests, compacted=self.clock())
@@ -338,6 +377,10 @@ def create_app(config, builder, clock=time.monotonic):
         proxy.client = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=config.timeout), trust_env=False,
             auto_decompress=False, connector=aiohttp.TCPConnector(limit=config.max_inflight))
+        proxy.memory_client = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=config.memory_timeout), trust_env=False,
+            auto_decompress=False, connector=aiohttp.TCPConnector(limit=1))
+        proxy.memory.start()
         async def sweeper():
             while True:
                 await asyncio.sleep(min(config.ttl, 30))
@@ -348,6 +391,13 @@ def create_app(config, builder, clock=time.monotonic):
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            await proxy.memory.close()
+            await proxy.memory_client.close()
+            cleanup = getattr(proxy.builder, "close", None)
+            if cleanup:
+                result = cleanup()
+                if inspect.isawaitable(result):
+                    await result
             await proxy.client.close()
     app.cleanup_ctx.append(lifecycle)
     return app
@@ -358,7 +408,9 @@ def main():
                     model=os.environ.get("LUMINE_MODEL", ""),
                     upstream=os.environ.get("LUMINE_UPSTREAM", "http://127.0.0.1:8000/v1/chat/completions"),
                     protocol=os.environ.get("LUMINE_MODEL_PROTOCOL", "image-only"),
-                    upstream_key=os.environ.get("LUMINE_UPSTREAM_KEY", ""))
+                    upstream_key=os.environ.get("LUMINE_UPSTREAM_KEY", ""),
+                    memory_timeout=float(os.environ.get("LUMINE_MEMORY_TIMEOUT", "30")),
+                    memory_interval=float(os.environ.get("LUMINE_MEMORY_INTERVAL", "2")))
     config.validate()
     # This must resolve to a shared Lumine-repo exact AutoProcessor implementation.
     module = os.environ.get("LUMINE_PROMPT_ADAPTER", "SessionProxy.adapter:build_step")

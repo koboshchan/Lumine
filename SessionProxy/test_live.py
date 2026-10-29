@@ -140,6 +140,7 @@ async def test_real_adapter_http_step_and_ack():
             assert r.status==200,await r.text()
             state=proxy.sessions[body["session_id"]].state
             if mode=="tiered-v1":
-                assert len(state["records"])==2 and len(state["notes"])==1
-                assert state["notes"][0]["provenance"]=="model-generated-unreviewed"
-                assert state["notes"][0]["timestamp_ms"]<state["records"][-1]["timestamp_ms"]
+                assert len(state["records"])==2
+                assert state["records"][0]["action"]==ACTION
+                assert state["records"][0]["note"] is None
+                assert not state.get("notes")  # action completion memory is never adopted

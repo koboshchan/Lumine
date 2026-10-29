@@ -1,12 +1,9 @@
 """Local, exact-tokenizer adapter. This never loads model weights or accesses a GPU."""
 import os
-import base64
-import io
 import json
 from functools import lru_cache
 from pathlib import Path
 
-from lumine_memory.live import build_live_step
 
 
 @lru_cache(maxsize=1)
@@ -30,17 +27,28 @@ def _tokenizer():
     return tokenizer
 
 
-def build_step(**kwargs):
+def build_step(*, state, frame, executed, now, protocol, max_input_tokens,
+               allow_compaction, memory_snapshot=None):
+    from .memory import action_step
     tokenizer = _tokenizer()
-    if kwargs["protocol"] == "tiered-v1":
-        from PIL import Image
-        raw = base64.b64decode(kwargs["frame"].split(",", 1)[1], validate=True)
-        with Image.open(io.BytesIO(raw)) as image:
-            small = image.convert("RGB").crop((0, 0, 1280, 720)).resize((320, 180), Image.Resampling.LANCZOS)
-            padded = Image.new("RGB", (320, 192), "black")
-            padded.paste(small, (0, 0))
-            output = io.BytesIO()
-            padded.save(output, format="PNG")
-            kwargs["thumbnail"] = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode()
-    return build_live_step(**kwargs, apply_template=tokenizer.apply_chat_template,
-                           encode=lambda s: tokenizer.encode(s, add_special_tokens=False))
+    return action_step(state=state, frame=frame, executed=executed, now=now,
+                       protocol=protocol, max_input_tokens=max_input_tokens,
+                       memory_snapshot=memory_snapshot, tokenizer=tokenizer)
+
+
+async def compact(*, state, now, summarize):
+    from .memory import compact_state
+    return await compact_state(state=state, now=now, summarize=summarize,
+                               tokenizer=_tokenizer())
+
+
+build_step.compact = compact
+build_step.snapshot_mode = True
+
+
+async def close():
+    from .memory import shutdown
+    shutdown()
+
+
+build_step.close = close
