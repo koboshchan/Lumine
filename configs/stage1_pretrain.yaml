@@ -1,48 +1,57 @@
-# Lumine Stage 1: Blackwell-Optimized Pre-training
-# Adjusted for 8x NVIDIA RTX PRO 6000 Ada (96GB VRAM each)
-# Loads Stage 0 checkpoint with injected Genshin lore/wiki knowledge
-
+# Lumine stage 1: pretrain, Qwen3-VL-2B-Instruct.
+# Launch from the Lumine repository so configs/data_pretrain.yaml resolves.
 model:
-  model_path: models/Lumine-Agent-Base-VL-7B  # Stage 0 checkpoint with knowledge injection (config.json fixed)
-  attn_implementation: flash_attention_2
-  add_custom_tokens: true # Add custom tokens for agent pretraining (action markers, UI elements, etc.)
+  model_path: output/lumine_stage0_knowledge_qwen3vl_2b/hf_ckpt/latest
+  chat_template: qwen3vl
+  add_custom_tokens: true
+  ops_implementation:
+    attn_implementation: flash_attention_2
+  optimizer:
+    lr: 1.0e-05
+    lr_decay_style: cosine
+  accelerator:
+    init_device: meta
+    ulysses_size: 1
+    gradient_checkpointing:
+      enable: true
+      enable_reentrant: false
+    fsdp_config:
+      fsdp_mode: fsdp2
 
 data:
   train_path: configs/data_pretrain.yaml
-  chat_template: qwen2vl
-  max_seq_len: 12288
-  train_size: 8000000
+  data_type: conversation
   datasets_type: mapping
-  source_name: lumine_pretrain
-  num_workers: 32
-  drop_last: false  # Don't drop incomplete batches
+  max_seq_len: 8192
+  # Packed-token budget per epoch, not a sample count. Tune for the prepared data.
+  train_size: 80000000
+  dataloader:
+    num_workers: 2
+    drop_last: false
   mm_configs:
-    image_max_pixels: 921600
-    video_max_pixels: 921600
+    image_max_pixels: 262144
+    video_max_pixels: 262144
+    # Qwen3-VL dynamic video budget, matching the upstream Qwen3-VL example.
+    video_total_pixels: 5780275
     max_frames: 8
     fps: 2.0
     use_audio_in_video: false
 
 train:
-  output_dir: output/Lumine-Agent-Pretrain-VL-7B
-  data_parallel_mode: fsdp2
-  wandb_project: lumine
-  wandb_name: lumine_rtx6000_720p_8frame
-  rmpad: false # Disabled - using fixed padding instead
-  rmpad_with_pos_ids: false # Must be false when rmpad is false (prevents train_steps=0 bug)
-  ulysses_parallel_size: 1
+  dyn_bsz: true
   freeze_vit: false
-  lr: 1.0e-5
-  init_device: meta
-  enable_fsdp_offload: false
-  lr_decay_style: cosine
-  num_train_epochs: 2
-  # Balanced: MBS=2 for 12k sequences with checkpointing OFF
-  micro_batch_size: 2
-  # 8 GPUs x 2 MBS x 6 grad_accum = 96 global batch size
-  global_batch_size: 96
-  # No max_steps - will train for full 8M samples × 2 epochs = 166k steps
-  save_steps: null  # Don't save intermediate checkpoints
-  save_epochs: 1    # Only save at end of each epoch (final checkpoint)
-  # RE-ENABLED: Gradient checkpointing needed for 12k sequences
-  enable_gradient_checkpointing: true
+  num_train_epochs: 3
+  micro_batch_size: 1
+  global_batch_size: 8
+  wandb:
+    enable: false
+    project: lumine
+    name: lumine_stage1_pretrain_qwen3vl_2b
+  checkpoint:
+    output_dir: output/lumine_stage1_pretrain_qwen3vl_2b
+    manager: dcp
+    save_steps: 0
+    save_epochs: 1
+    save_hf_weights: true
+    hf_save_epochs: 1
+    update_latest: true

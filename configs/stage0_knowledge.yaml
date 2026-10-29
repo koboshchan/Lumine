@@ -1,36 +1,57 @@
-# Lumine Stage 0: Knowledge Injection
-# Injects Genshin Impact lore/wiki Q&A into Qwen2-VL-7B-Instruct (text-only)
-
+# Lumine stage 0: knowledge, Qwen3-VL-2B-Instruct.
+# Launch from the Lumine repository so configs/data_knowledge.yaml resolves.
 model:
-  model_path: models/Qwen2-VL-7B-Instruct
-  attn_implementation: flash_attention_2
+  model_path: Qwen/Qwen3-VL-2B-Instruct
+  chat_template: qwen3vl
+  add_custom_tokens: true
+  ops_implementation:
+    attn_implementation: flash_attention_2
+  optimizer:
+    lr: 2.0e-05
+    lr_decay_style: cosine
+  accelerator:
+    init_device: meta
+    ulysses_size: 1
+    gradient_checkpointing:
+      enable: true
+      enable_reentrant: false
+    fsdp_config:
+      fsdp_mode: fsdp2
 
 data:
   train_path: configs/data_knowledge.yaml
-  chat_template: qwen2vl
+  data_type: conversation
+  datasets_type: mapping
   max_seq_len: 4096
-  train_size: -1
-  num_workers: 32
-  drop_last: False  # CRITICAL: Use capital F for Python bool
+  # Packed-token budget per epoch, not a sample count. Tune for the prepared data.
+  train_size: 8000000
+  dataloader:
+    num_workers: 2
+    drop_last: false
   mm_configs:
-    image_max_pixels: 921600
-    video_max_pixels: 921600
+    image_max_pixels: 262144
+    video_max_pixels: 262144
+    # Qwen3-VL dynamic video budget, matching the upstream Qwen3-VL example.
+    video_total_pixels: 2890137
     max_frames: 1
     fps: 1.0
+    use_audio_in_video: false
 
 train:
-  output_dir: output/Lumine-Agent-Knowledge-VL-7B
-  data_parallel_mode: fsdp2
-  wandb_project: lumine
-  wandb_name: lumine_stage0_knowledge
-  rmpad: false
-  rmpad_with_pos_ids: false  # Must be false when rmpad is false
-  ulysses_parallel_size: 1
+  dyn_bsz: true
   freeze_vit: true
-  lr: 2.0e-5
-  init_device: meta
-  lr_decay_style: cosine
   num_train_epochs: 3
-  micro_batch_size: 8
-  global_batch_size: 64  # 8 GPUs × 8 MBS = 64
-  save_epochs: 1
+  micro_batch_size: 1
+  global_batch_size: 8
+  wandb:
+    enable: false
+    project: lumine
+    name: lumine_stage0_knowledge_qwen3vl_2b
+  checkpoint:
+    output_dir: output/lumine_stage0_knowledge_qwen3vl_2b
+    manager: dcp
+    save_steps: 0
+    save_epochs: 1
+    save_hf_weights: true
+    hf_save_epochs: 1
+    update_latest: true

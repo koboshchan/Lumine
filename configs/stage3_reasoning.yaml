@@ -1,42 +1,57 @@
-# Lumine Stage 3: Blackwell-Optimized Reasoning (Thinking)
-# Base: Lumine-Agent-Instruct-VL-7B
-# 2x B200 (384GB Total VRAM) | Goal: Long-form Chain-of-Thought Reasoning
-
+# Lumine stage 3: reasoning, Qwen3-VL-2B-Instruct.
+# Launch from the Lumine repository so configs/data_reasoning.yaml resolves.
 model:
-  model_path: output/Lumine-Agent-Instruct-VL-7B
-  attn_implementation: flash_attention_2
+  model_path: output/lumine_stage2_instruct_qwen3vl_2b/hf_ckpt/latest
+  chat_template: qwen3vl
+  add_custom_tokens: true
+  ops_implementation:
+    attn_implementation: flash_attention_2
+  optimizer:
+    lr: 5.0e-06
+    lr_decay_style: cosine
+  accelerator:
+    init_device: meta
+    ulysses_size: 1
+    gradient_checkpointing:
+      enable: true
+      enable_reentrant: false
+    fsdp_config:
+      fsdp_mode: fsdp2
 
 data:
   train_path: configs/data_reasoning.yaml
-  chat_template: qwen2vl
-  max_seq_len: 32768
-  train_size: 100000
+  data_type: conversation
   datasets_type: mapping
-  drop_last: false  # Don't drop incomplete batches
+  max_seq_len: 8192
+  # Packed-token budget per epoch, not a sample count. Tune for the prepared data.
+  train_size: 8000000
+  dataloader:
+    num_workers: 2
+    drop_last: false
   mm_configs:
-    image_max_pixels: 921600
-    video_max_pixels: 921600
+    image_max_pixels: 262144
+    video_max_pixels: 262144
+    # Qwen3-VL dynamic video budget, matching the upstream Qwen3-VL example.
+    video_total_pixels: 5780275
     max_frames: 8
     fps: 2.0
+    use_audio_in_video: false
 
 train:
-  output_dir: output/Lumine-Agent-Thinking-VL-7B
-  data_parallel_mode: fsdp2
-  wandb_project: lumine
-  wandb_name: lumine_stage3_b200_reasoning
-  rmpad: true # Critical for 32k window to maintain speed
-  rmpad_with_pos_ids: true
-  ulysses_parallel_size: 1
-  # Strategy: Unfreeze ViT if detail matters, but Stage 3 often focuses on the LLM
-  freeze_vit: false 
-  lr: 5.0e-6        # Low LR for fine-tuning reasoning capabilities
-  init_device: meta
-  lr_decay_style: cosine
+  dyn_bsz: true
+  freeze_vit: true
   num_train_epochs: 2
-  micro_batch_size: 1 # 32k context + MBZ 1 is safer for peak CoT samples
-  global_batch_size: 8
-  # No max_steps - will train for full 100k samples × 2 epochs = 25k steps
-  save_steps: null  # Don't save intermediate checkpoints
-  save_epochs: 1    # Only save at end of each epoch (final checkpoint)
-  # PERFORMANCE TUNING
-  enable_gradient_checkpointing: false # Still disabled for B200 speed
+  micro_batch_size: 1
+  global_batch_size: 4
+  wandb:
+    enable: false
+    project: lumine
+    name: lumine_stage3_reasoning_qwen3vl_2b
+  checkpoint:
+    output_dir: output/lumine_stage3_reasoning_qwen3vl_2b
+    manager: dcp
+    save_steps: 0
+    save_epochs: 1
+    save_hf_weights: true
+    hf_save_epochs: 1
+    update_latest: true
