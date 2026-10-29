@@ -13,3 +13,7 @@ Attempted implementation of Lumine-Agent by arXiv:2511.08892.
       url={https://arxiv.org/abs/2511.08892}, 
 }
 ```
+
+Windows model runner
+
+See [Runner/README.md](Runner/README.md) for the native Go GUI, dry-run controls and vLLM/Colab serving instructions.

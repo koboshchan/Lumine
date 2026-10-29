@@ -17,3 +17,5 @@ hf_ckpt
 .claude
 assets
 genshinPlayData
+
+Runner/*.exe
