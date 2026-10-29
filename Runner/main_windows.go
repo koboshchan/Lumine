@@ -53,17 +53,22 @@ type paintStruct struct {
 }
 
 const (
-	endpointID = 101
-	modelID    = 102
-	keyID      = 103
-	windowID   = 104
-	refreshID  = 105
-	dryID      = 106
-	startID    = 107
-	stopID     = 108
-	statusID   = 109
-	actionID   = 110
-	proxyID    = 111
+	endpointID    = 101
+	modelID       = 102
+	keyID         = 103
+	windowID      = 104
+	refreshID     = 105
+	dryID         = 106
+	startID       = 107
+	stopID        = 108
+	statusID      = 109
+	actionID      = 110
+	proxyID       = 111
+	captureID     = 112
+	obsAddressID  = 113
+	obsPortID     = 114
+	obsPasswordID = 115
+	obsSourceID   = 116
 )
 
 func text(h uintptr) string {
@@ -122,6 +127,11 @@ func start() {
 		return
 	}
 	cfg := Config{Endpoint: strings.TrimSpace(text(controls[endpointID])), Model: strings.TrimSpace(text(controls[modelID])), APIKey: text(controls[keyID]), Proxy: call(user, "SendMessageW", controls[proxyID], 0xf0, 0, 0) == 1, Dry: call(user, "SendMessageW", controls[dryID], 0xf0, 0, 0) == 1, Window: choices[idx].Handle}
+	cfg.CaptureOBS = call(user, "SendMessageW", controls[captureID], 0x147, 0, 0) == 1
+	cfg.OBS = OBSConfig{Address: strings.TrimSpace(text(controls[obsAddressID])), Port: strings.TrimSpace(text(controls[obsPortID])), Password: text(controls[obsPasswordID]), Source: strings.TrimSpace(text(controls[obsSourceID]))}
+	// Never persist the password; clear the masked control after transferring
+	// ownership to the session. No credential defaults or settings file.
+	setText(controls[obsPasswordID], "")
 	ctx, cancel := context.WithCancel(context.Background())
 	sink := &winSink{target: cfg.Window, held: map[string]bool{}}
 	state.Lock()
@@ -166,45 +176,38 @@ func run(ctx context.Context, cfg Config, sink *winSink) {
 	state.Lock()
 	state.armed = true
 	state.Unlock()
-	// Sample at the dataset's 5Hz, independent of endpoint latency. Keep only
-	// the newest frame; slow inference must never build a capture/action backlog.
-	type sample struct {
-		frame *image.RGBA
-		err   error
-	}
-	samples := make(chan sample, 1)
-	go func() {
-		ticker := time.NewTicker(FrameDuration)
-		defer ticker.Stop()
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			f, e := capture(cfg.Window)
-			if e == nil {
-				state.Lock()
-				state.preview = f
-				state.Unlock()
-			}
-			select {
-			case <-samples:
-			default:
-			}
-			select {
-			case samples <- sample{f, e}:
-			case <-ctx.Done():
-				return
-			}
-			if e != nil {
-				return
-			}
-			select {
-			case <-ticker.C:
-			case <-ctx.Done():
-				return
-			}
+	captureName := "GDI"
+	captureFrame := func(ctx context.Context) (*image.RGBA, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-	}()
+		return capture(cfg.Window)
+	}
+	if cfg.CaptureOBS {
+		captureName = "OBS"
+		status("Connecting to OBS. F8 cancels; OBS failure never switches to GDI.")
+		obs, err := DialOBS(ctx, cfg.OBS)
+		cfg.OBS.Password = ""
+		if err != nil {
+			status("Stopped: " + err.Error() + ". Select GDI explicitly to use fallback.")
+			return
+		}
+		defer obs.Close()
+		captureFrame = func(ctx context.Context) (*image.RGBA, error) {
+			if err := ready(cfg.Window); err != nil {
+				return nil, err
+			}
+			return obs.Capture(ctx)
+		}
+	} else {
+		cfg.OBS.Password = ""
+	}
+	samples, captureDone := captureLatest(ctx, captureFrame, func(f *image.RGBA) {
+		state.Lock()
+		state.preview = f
+		state.Unlock()
+	})
+	defer func() { cancel(); <-captureDone }()
 	client := Client{}
 	var ps *ProxySession
 	if cfg.Proxy {
@@ -227,14 +230,18 @@ func run(ctx context.Context, cfg Config, sink *winSink) {
 		}()
 	}
 	for ctx.Err() == nil {
-		var snap sample
+		var snap captureSample
 		select {
-		case snap = <-samples:
+		case value, ok := <-samples:
+			if !ok {
+				return
+			}
+			snap = value
 		case <-ctx.Done():
 			return
 		}
 		if snap.err != nil {
-			status(snap.err.Error())
+			status("Stopped: " + captureName + " capture failed: " + snap.err.Error() + ". No automatic fallback.")
 			return
 		}
 		start := time.Now()
@@ -294,7 +301,7 @@ func run(ctx context.Context, cfg Config, sink *winSink) {
 		if cfg.Dry {
 			mode = "DRY RUN"
 		}
-		status(fmt.Sprintf("%s   inference %.0f ms   %.2f decisions/s   F8 stops", mode, float64(inference.Milliseconds()), 1/elapsed.Seconds()))
+		status(fmt.Sprintf("%s / %s   capture %.0f ms   inference %.0f ms   %.2f decisions/s   F8 stops", mode, captureName, float64(snap.latency.Milliseconds()), float64(inference.Milliseconds()), 1/elapsed.Seconds()))
 	}
 }
 func paint(h uintptr) {
@@ -316,12 +323,20 @@ func paint(h uintptr) {
 	}
 	bi := bmpInfo(1280, 720)
 	call(gdi, "SetStretchBltMode", dc, 4)
-	call(gdi, "StretchDIBits", dc, 20, 276, 800, 450, 0, 0, 1280, 720, uintptr(unsafe.Pointer(&bgra[0])), uintptr(unsafe.Pointer(&bi)), 0, 0x00CC0020)
+	call(gdi, "StretchDIBits", dc, 20, 388, 800, 450, 0, 0, 1280, 720, uintptr(unsafe.Pointer(&bgra[0])), uintptr(unsafe.Pointer(&bi)), 0, 0x00CC0020)
 }
 func windowProc(h uintptr, m uint32, w, l uintptr) uintptr {
 	switch m {
 	case 0x111:
 		switch int(w & 65535) {
+		case captureID:
+			if (w>>16)&65535 == 1 {
+				if call(user, "SendMessageW", controls[captureID], 0x147, 0, 0) == 1 {
+					status("Ready / OBS selected. OBS must stay open; no automatic GDI fallback.")
+				} else {
+					status("Ready / GDI fallback selected. Target must stay visible and focused.")
+				}
+			}
 		case refreshID:
 			refresh()
 		case startID:
@@ -346,10 +361,10 @@ func windowProc(h uintptr, m uint32, w, l uintptr) uintptr {
 		if active {
 			enabled = 0
 		}
-		for _, id := range []int{endpointID, modelID, keyID, windowID, refreshID, dryID, proxyID, startID} {
+		for _, id := range []int{endpointID, modelID, keyID, windowID, refreshID, dryID, proxyID, captureID, obsAddressID, obsPortID, obsPasswordID, obsSourceID, startID} {
 			call(user, "EnableWindow", controls[id], enabled)
 		}
-		var r = rect{20, 276, 820, 726}
+		var r = rect{20, 388, 820, 838}
 		call(user, "InvalidateRect", h, uintptr(unsafe.Pointer(&r)), 0)
 		return 0
 	case 0xf:
@@ -383,7 +398,7 @@ func main() {
 	if call(user, "RegisterClassExW", uintptr(unsafe.Pointer(&c))) == 0 {
 		return
 	}
-	mainWindow = call(user, "CreateWindowExW", 0, uintptr(unsafe.Pointer(cls)), sp("Lumine / model runner"), 0x00ca0000, 100, 100, 860, 820, 0, 0, instance, 0)
+	mainWindow = call(user, "CreateWindowExW", 0, uintptr(unsafe.Pointer(cls)), sp("Lumine / model runner"), 0x00ca0000, 100, 100, 860, 932, 0, 0, instance, 0)
 	if mainWindow == 0 {
 		return
 	}
@@ -401,14 +416,28 @@ func main() {
 	child("STATIC", "Target", 0, 20, 117, 90, 22, 0)
 	child("COMBOBOX", "", windowID, 112, 114, 600, 350, 0x00210003)
 	child("BUTTON", "Refresh", refreshID, 722, 114, 98, 26, 0x10000)
-	child("BUTTON", "Dry run (no input)", dryID, 20, 155, 250, 28, 0x10003)
+	child("STATIC", "Capture", 0, 20, 155, 90, 22, 0)
+	child("COMBOBOX", "", captureID, 112, 152, 300, 160, 0x00210003)
+	call(user, "SendMessageW", controls[captureID], 0x143, 0, sp("GDI / visible target (fallback)"))
+	call(user, "SendMessageW", controls[captureID], 0x143, 0, sp("OBS / game capture or program scene"))
+	call(user, "SendMessageW", controls[captureID], 0x14e, 0, 0)
+	child("STATIC", "Blank source = current program scene", 0, 430, 155, 390, 22, 0)
+	child("STATIC", "OBS address", 0, 20, 192, 90, 22, 0)
+	child("EDIT", "ws://127.0.0.1", obsAddressID, 112, 189, 430, 25, 0x00810080)
+	child("STATIC", "Port", 0, 560, 192, 45, 22, 0)
+	child("EDIT", "4455", obsPortID, 610, 189, 210, 25, 0x00810080)
+	child("STATIC", "Source", 0, 20, 229, 90, 22, 0)
+	child("EDIT", "", obsSourceID, 112, 226, 300, 25, 0x00810080)
+	child("STATIC", "Password", 0, 430, 229, 70, 22, 0)
+	child("EDIT", "", obsPasswordID, 500, 226, 320, 25, 0x008100a0)
+	child("BUTTON", "Dry run (no input)", dryID, 20, 267, 250, 28, 0x10003)
 	call(user, "SendMessageW", controls[dryID], 0xf1, 1, 0)
-	child("BUTTON", "Session proxy mode", proxyID, 280, 155, 200, 28, 0x10003)
-	child("BUTTON", "Start / 5s countdown", startID, 490, 151, 200, 34, 0x10000)
-	child("BUTTON", "Stop / F8", stopID, 702, 151, 118, 34, 0x10000)
-	child("STATIC", "Ready. Dry run is enabled. Borderless/windowed game must stay visible and focused.", statusID, 20, 196, 800, 32, 0)
-	child("EDIT", "", actionID, 20, 232, 800, 32, 0x00800884)
-	child("STATIC", "Foreground client preview   /   1280 x 720   /   single-frame stage-1 policy", 0, 20, 735, 800, 22, 0)
+	child("BUTTON", "Session proxy mode", proxyID, 280, 267, 200, 28, 0x10003)
+	child("BUTTON", "Start / 5s countdown", startID, 490, 263, 200, 34, 0x10000)
+	child("BUTTON", "Stop / F8", stopID, 702, 263, 118, 34, 0x10000)
+	child("STATIC", "Ready / GDI selected. OBS must stay open for OBS mode. Dry run is enabled.", statusID, 20, 308, 800, 32, 0)
+	child("EDIT", "", actionID, 20, 344, 800, 32, 0x00800884)
+	child("STATIC", "Capture preview   /   1280 x 720   /   confirm source in dry run", 0, 20, 847, 800, 22, 0)
 	if call(user, "RegisterHotKey", mainWindow, 1, 0x4000, 0x77) == 0 {
 		call(user, "MessageBoxW", mainWindow, sp("F8 is already registered. Close the other hotkey app and restart. Runner will not start without its panic hotkey."), sp("Lumine safety check"), 0x10)
 		call(user, "DestroyWindow", mainWindow)
