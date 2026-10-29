@@ -19,3 +19,6 @@ assets
 genshinPlayData
 
 Runner/*.exe
+
+SessionProxy/.venv/
+.pytest_cache/
