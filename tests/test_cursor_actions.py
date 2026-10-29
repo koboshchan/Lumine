@@ -152,14 +152,14 @@ class CursorActionsTests(unittest.TestCase):
         self.assertIn("must be used together", result.stderr)
 
     def test_custom_token_registered_in_training_submodule(self):
-        path = ROOT / "VeOmni/tasks/omni/train_qwen_vl.py"
+        path = ROOT / "VeOmni/veomni/models/custom_tokens.py"
         self.assertTrue(path.exists(), "Initialize VeOmni with git submodule update --init")
         tree = ast.parse(path.read_text())
         custom_lists = [
             ast.literal_eval(node.value)
             for node in ast.walk(tree)
             if isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "custom_tokens" for t in node.targets)
+            and any(isinstance(t, ast.Name) and t.id == "LUMINE_CUSTOM_TOKENS" for t in node.targets)
         ]
         self.assertEqual(len(custom_lists), 1)
         self.assertEqual(custom_lists[0].count("<use_absolute>"), 1)
