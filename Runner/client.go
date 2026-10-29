@@ -29,7 +29,7 @@ func PaddedFrame(src image.Image) (*image.RGBA, error) {
 
 type Config struct {
 	Endpoint, Model, APIKey string
-	Dry                     bool
+	Dry, Proxy              bool
 	Window                  uintptr
 }
 type Client struct{ HTTP *http.Client }

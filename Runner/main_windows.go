@@ -63,6 +63,7 @@ const (
 	stopID     = 108
 	statusID   = 109
 	actionID   = 110
+	proxyID    = 111
 )
 
 func text(h uintptr) string {
@@ -120,7 +121,7 @@ func start() {
 		status("Choose a target window first")
 		return
 	}
-	cfg := Config{Endpoint: strings.TrimSpace(text(controls[endpointID])), Model: strings.TrimSpace(text(controls[modelID])), APIKey: text(controls[keyID]), Dry: call(user, "SendMessageW", controls[dryID], 0xf0, 0, 0) == 1, Window: choices[idx].Handle}
+	cfg := Config{Endpoint: strings.TrimSpace(text(controls[endpointID])), Model: strings.TrimSpace(text(controls[modelID])), APIKey: text(controls[keyID]), Proxy: call(user, "SendMessageW", controls[proxyID], 0xf0, 0, 0) == 1, Dry: call(user, "SendMessageW", controls[dryID], 0xf0, 0, 0) == 1, Window: choices[idx].Handle}
 	ctx, cancel := context.WithCancel(context.Background())
 	sink := &winSink{target: cfg.Window, held: map[string]bool{}}
 	state.Lock()
@@ -205,6 +206,26 @@ func run(ctx context.Context, cfg Config, sink *winSink) {
 		}
 	}()
 	client := Client{}
+	var ps *ProxySession
+	if cfg.Proxy {
+		var e error
+		if ps, e = NewProxySession(nil, cfg.Endpoint, cfg.APIKey); e != nil {
+			status("Stopped: " + e.Error())
+			return
+		}
+		rc, rcancel := context.WithTimeout(ctx, 10*time.Second)
+		e = ps.Reset(rc) // fresh session on every start
+		rcancel()
+		if e != nil {
+			status("Stopped: proxy reset failed: " + e.Error())
+			return
+		}
+		defer func() { // stop/failure: never continue uncertain history
+			rc, rcancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ps.Reset(rc)
+			rcancel()
+		}()
+	}
 	for ctx.Err() == nil {
 		var snap sample
 		select {
@@ -218,7 +239,15 @@ func run(ctx context.Context, cfg Config, sink *winSink) {
 		}
 		start := time.Now()
 		frame := snap.frame
-		result, err := client.Infer(ctx, cfg, frame)
+		var result, actionID string
+		var err error
+		if ps != nil {
+			var sr StepResult
+			sr, err = ps.Step(ctx, frame)
+			result, actionID = sr.Action, sr.ActionID
+		} else {
+			result, err = client.Infer(ctx, cfg, frame)
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -245,6 +274,9 @@ func run(ctx context.Context, cfg Config, sink *winSink) {
 					status("Stopped: " + err.Error())
 				}
 				return
+			}
+			if ps != nil {
+				ps.MarkExecuted(actionID) // only after real execution
 			}
 		} else {
 			// In dry-run keep the same action horizon, but never construct input events.
@@ -314,7 +346,7 @@ func windowProc(h uintptr, m uint32, w, l uintptr) uintptr {
 		if active {
 			enabled = 0
 		}
-		for _, id := range []int{endpointID, modelID, keyID, windowID, refreshID, dryID, startID} {
+		for _, id := range []int{endpointID, modelID, keyID, windowID, refreshID, dryID, proxyID, startID} {
 			call(user, "EnableWindow", controls[id], enabled)
 		}
 		var r = rect{20, 276, 820, 726}
@@ -371,6 +403,7 @@ func main() {
 	child("BUTTON", "Refresh", refreshID, 722, 114, 98, 26, 0x10000)
 	child("BUTTON", "Dry run (no input)", dryID, 20, 155, 250, 28, 0x10003)
 	call(user, "SendMessageW", controls[dryID], 0xf1, 1, 0)
+	child("BUTTON", "Session proxy mode", proxyID, 280, 155, 200, 28, 0x10003)
 	child("BUTTON", "Start / 5s countdown", startID, 490, 151, 200, 34, 0x10000)
 	child("BUTTON", "Stop / F8", stopID, 702, 151, 118, 34, 0x10000)
 	child("STATIC", "Ready. Dry run is enabled. Borderless/windowed game must stay visible and focused.", statusID, 20, 196, 800, 32, 0)
