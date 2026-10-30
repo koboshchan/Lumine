@@ -1,6 +1,6 @@
 [
-  "<|action_start|><use_absolute> 814 510 0 ;  ;  ;  ;  ;  ; <|action_end|>",
+  "<|action_start|><|use_abs|> 814 510 0 ;  ;  ;  ;  ;  ; <|action_end|>",
   "<|action_start|>0 0 0 ;  ;  ;  ;  ;  ; <|action_end|>",
-  "<|action_start|><use_absolute> 798 428 0 ; Space ; Space F ; Space F ; Space F ;  ; <|action_end|>",
-  "<|action_start|><use_absolute> 688 371 0 ;  ;  ;  ;  ;  ; <|action_end|>"
+  "<|action_start|><|use_abs|> 798 428 0 ; Space ; Space F ; Space F ; Space F ;  ; <|action_end|>",
+  "<|action_start|><|use_abs|> 688 371 0 ;  ;  ;  ;  ;  ; <|action_end|>"
 ]

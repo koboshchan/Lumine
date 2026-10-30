@@ -57,7 +57,7 @@ def parse_completion(text, tiered=False):
     if len(fields) != 7:
         raise ValueError("action fields")
     move = fields[0].split()
-    absolute = bool(move and move[0] == "<use_absolute>")
+    absolute = bool(move and move[0] == "<|use_abs|>")
     if absolute:
         move = move[1:]
     if len(move) != 3 or any(not re.fullmatch(r"[+-]?[0-9]+", v) or len(v) > 20 for v in move):

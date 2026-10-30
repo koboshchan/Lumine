@@ -1,7 +1,7 @@
 {
   "<|action_start|>": 151669,
   "<|action_end|>": 151670,
-  "<use_absolute>": 151671,
+  "<|use_abs|>": 151671,
   "<|thought_start|>": 151672,
   "<|thought_end|>": 151673,
   "LB": 34068,

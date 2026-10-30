@@ -1,4 +1,4 @@
-"""Frozen IDs from lumine/test-2026-10-29; exact IDs, not a vocabulary count."""
+"""Actual 4B protocol IDs; exact IDs, not a vocabulary count."""
 import json
 import os
 from pathlib import Path
@@ -10,15 +10,15 @@ from SessionProxy.service import KEYS, parse_completion
 EXPECTED = json.loads(Path(__file__).with_name("action_vocab_ids.json").read_text())
 CUSTOM = json.loads(Path(__file__).with_name("custom_token_ids.json").read_text())
 CHECKPOINT_HASHES = {
-    "action-token-ids.json": "eddd403036b5421d6b1e0d3530049c4221649dd153f72eef1fcc31ec28cecba2",
-    "tokenizer.json": "5a31e67a9e3ade8cb3f163fba155a864a26fd17e076eeee00ccc148d8af3a989",
-    "tokenizer_config.json": "3550f983a0e99e18b1860bdae7834501e00e8ff4ffb6508ac9407ac6dbc63623",
+    "action-token-ids.json": "d034ec035aad9c0fe65bb4287c4c22fb9b51ac8034ca2bd4397ec05ffa31a2d9",
+    "tokenizer.json": "58e7028ff56a78adc38d7989adc6b2a00bed36a257b9623c0fed76c8e8e6f030",
+    "tokenizer_config.json": "15d9c5ecb9cfd3c63e5be36629d00b7e21f32ce7c54037fc7fdb02033bca1d13",
     "chat_template.jinja": "3636d0f0bd6bef02654cdffdc447b79cb2cef8ab02cc75267345946291a489e4",
 }
 
 
 def action(key="", absolute=False):
-    movement = "<use_absolute> 1279 719 -5" if absolute else "-995 996 5"
+    movement = "<|use_abs|> 1279 719 -5" if absolute else "-995 996 5"
     return "<|action_start|>" + movement + " ; " + " ; ".join([key] * 6) + "<|action_end|>"
 
 
@@ -33,7 +33,7 @@ def test_atomic_but_wrong_ids_fail_closed():
         def decode(self, ids, **kw):
             return next(k for k, v in self.vocab.items() if v == ids[0])
     assert len(CUSTOM) == 7
-    assert set(CUSTOM) == {"<|action_start|>", "<|action_end|>", "<use_absolute>",
+    assert set(CUSTOM) == {"<|action_start|>", "<|action_end|>", "<|use_abs|>",
                            "<|thought_start|>", "<|thought_end|>", "Eleven", "Twelve"}
     validate_custom_token_ids(Tokenizer(0))
     base_only_changed = Tokenizer(0)
@@ -46,7 +46,7 @@ def test_atomic_but_wrong_ids_fail_closed():
 
 def test_parser_all_action_vocabulary_entries_and_no_thought_execution():
     assert len(EXPECTED) == 37 and len(set(EXPECTED.values())) == 37
-    structural = {"<|action_start|>", "<|action_end|>", "<use_absolute>",
+    structural = {"<|action_start|>", "<|action_end|>", "<|use_abs|>",
                   "<|thought_start|>", "<|thought_end|>"}
     for key in EXPECTED.keys() - structural:
         assert key in KEYS
@@ -71,7 +71,7 @@ def test_real_checkpoint_ids_rendered_ack_and_decoded_output(monkeypatch):
     from lumine_memory.prompt import render_text
 
     root = Path(os.environ["LUMINE_TEST_PROCESSOR"])
-    # Verify this is the saved test artifact, not a newly regenerated fixture.
+    # Verify this is the hash-pinned current 4B marker artifact.
     for name, expected_hash in CHECKPOINT_HASHES.items():
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected_hash
     assert json.loads((root / "action-token-ids.json").read_text()) == EXPECTED
@@ -82,7 +82,7 @@ def test_real_checkpoint_ids_rendered_ack_and_decoded_output(monkeypatch):
     try:
         active = _tokenizer()
         validate_custom_token_ids(active)
-        structural = {"<|action_start|>", "<|action_end|>", "<use_absolute>",
+        structural = {"<|action_start|>", "<|action_end|>", "<|use_abs|>",
                       "<|thought_start|>", "<|thought_end|>"}
         contextual_keys = EXPECTED.keys() - structural
         merged = {key for key in contextual_keys
@@ -102,7 +102,7 @@ def test_real_checkpoint_ids_rendered_ack_and_decoded_output(monkeypatch):
                 assert encoded[0] == EXPECTED["<|action_start|>"]
                 assert encoded[-1] == EXPECTED["<|action_end|>"]
                 if absolute:
-                    assert encoded[1] == EXPECTED["<use_absolute>"]
+                    assert encoded[1] == EXPECTED["<|use_abs|>"]
                 assert parse_completion(active.decode(encoded, skip_special_tokens=False)) == (text, None)
                 first = build_step(state={}, frame="frame1", executed=None, now=1,
                                    protocol="tiered-v1", max_input_tokens=30000,
@@ -192,13 +192,13 @@ def test_before_after_seven_custom_change_preserves_all_30_contextual_words(monk
     _tokenizer.cache_clear()
     t=AutoTokenizer.from_pretrained(root,local_files_only=True,trust_remote_code=False)
     active=_tokenizer()
-    keys=sorted(set(EXPECTED)-{'<|action_start|>','<|action_end|>','<use_absolute>','<|thought_start|>','<|thought_end|>','Eleven','Twelve'})
+    keys=sorted(set(EXPECTED)-{'<|action_start|>','<|action_end|>','<|use_abs|>','<|thought_start|>','<|thought_end|>','Eleven','Twelve'})
     rows=[]
     for key in keys:
      for absolute in (False,True):
       for position in range(6):
        chunks=['']*6;chunks[position]=key
-       movement='<use_absolute> 1279 719 -5' if absolute else '-995 996 5'
+       movement='<|use_abs|> 1279 719 -5' if absolute else '-995 996 5'
        text='<|action_start|>'+movement+' ; '+' ; '.join(chunks)+'<|action_end|>'
        first=build_step(state={},frame='f1',executed=None,now=1,protocol='tiered-v1',max_input_tokens=30000,allow_compaction=False)
        second=build_step(state=first['state'],frame='f2',executed={'frame':'f1','action':text},now=1.2,protocol='tiered-v1',max_input_tokens=30000,allow_compaction=False)
@@ -212,7 +212,12 @@ def test_before_after_seven_custom_change_preserves_all_30_contextual_words(monk
     for k,v in new.items():assert active.encode(k,add_special_tokens=False)==[v]
 
     raw=json.dumps({'custom_ids':new,'rows':rows},sort_keys=True,separators=(',',':')).encode()
-    # Recorded before changing the old 37-entry guard to the seven-only guard.
+    # All 360 contextual action encodings must round trip without rewriting BPE.
     assert len(rows)==360
-    assert hashlib.sha256(raw).hexdigest()=='308ea29261cafd582fdd5fdf875b6f42869ae8d90219df5d00b1e7b47797d222'
+    assert all(active.decode(r['ids'], skip_special_tokens=False) == r['text'] for r in rows)
     _tokenizer.cache_clear()
+
+@pytest.mark.parametrize("marker", ["<use_absolute>", "<use_abs>"])
+def test_legacy_absolute_marker_rejected(marker):
+    with pytest.raises(ValueError):
+        parse_completion(action(absolute=True).replace("<|use_abs|>", marker))

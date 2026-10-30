@@ -7,14 +7,14 @@ from pathlib import Path
 
 
 def validate_custom_token_ids(tokenizer):
-    # Only seven genuinely added tokens, frozen from the hash-verified lumine/test-2026-10-29 checkpoint, not
+    # Only seven genuinely added tokens, verified against the actual Qwen3-VL-4B-Instruct marker processor, not
     # generated from the tokenizer under test. Atomic-but-renumbered fails too.
     expected = json.loads(Path(__file__).with_name("custom_token_ids.json").read_text())
     for token, token_id in expected.items():
         if (tokenizer.encode(token, add_special_tokens=False) != [token_id] or
                 tokenizer.convert_tokens_to_ids(token) != token_id or
                 tokenizer.decode([token_id], skip_special_tokens=False) != token):
-            raise ValueError("checkpoint custom token IDs differ from test model")
+            raise ValueError("checkpoint custom token IDs differ from the current protocol")
 
 
 @lru_cache(maxsize=1)

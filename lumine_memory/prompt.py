@@ -1,4 +1,5 @@
 """Deterministic causal tier selection. No ML, GPU, network or server imports."""
+from .action_protocol import render_action
 from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
@@ -107,7 +108,7 @@ def _messages(current, recent, middle, notes):
             images.append(path)
             counts.append(count)
             if tier != "current":
-                messages.append({"role": "assistant", "content": row.action})
+                messages.append({"role": "assistant", "content": render_action(row.action)})
     return messages, images, counts
 
 

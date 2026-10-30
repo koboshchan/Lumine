@@ -36,7 +36,7 @@ func TestDatasetSamples(t *testing.T) {
 	}
 }
 func TestChunksAndBounds(t *testing.T) {
-	a, e := ParseAction("<|action_start|><use_absolute> 1279 719 -5 ; W LB ; W ; ; one ; Shift Space ; <|action_end|>")
+	a, e := ParseAction("<|action_start|><|use_abs|> 1279 719 -5 ; W LB ; W ; ; one ; Shift Space ; <|action_end|>")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -57,8 +57,8 @@ func TestMalformedRejected(t *testing.T) {
 		"<|action_start|>1 0 0 ; ; ; ; ; ;<|action_end|>",
 		"<|action_start|>1000 0 0 ; ; ; ; ; ;<|action_end|>",
 		"<|action_start|>0 -1000 0 ; ; ; ; ; ;<|action_end|>",
-		"<|action_start|><use_absolute>1280 0 0 ; ; ; ; ; ;<|action_end|>",
-		"<|action_start|><use_absolute>0 -1 0 ; ; ; ; ; ;<|action_end|>",
+		"<|action_start|><|use_abs|>1280 0 0 ; ; ; ; ; ;<|action_end|>",
+		"<|action_start|><|use_abs|>0 -1 0 ; ; ; ; ; ;<|action_end|>",
 		"<|action_start|>0 0 0 ; W W ; ; ; ; ;<|action_end|>",
 		"<|action_start|>0 0 0 ; W A S D Space ; ; ; ; ;<|action_end|>",
 		"<|action_start|>0 0 0 ; Win ; ; ; ; ;<|action_end|>",
@@ -130,5 +130,13 @@ func TestCancelAndErrorRelease(t *testing.T) {
 	defer cancel()
 	if e := Play(ctx, a, s); !errors.Is(e, context.DeadlineExceeded) || s.release != 1 || len(s.keys) != 1 {
 		t.Fatal(e, s)
+	}
+}
+
+func TestLegacyAbsoluteMarkersRejected(t *testing.T) {
+	for _, marker := range []string{"<use_absolute>", "<use_abs>"} {
+		if _, err := ParseAction("<|action_start|>" + marker + " 1 2 0 ; ; ; ; ; ;<|action_end|>"); err == nil {
+			t.Fatal("legacy marker accepted")
+		}
 	}
 }

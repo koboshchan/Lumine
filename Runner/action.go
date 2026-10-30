@@ -44,7 +44,7 @@ func ParseAction(text string) (Action, error) {
 		return a, fmt.Errorf("expected movement and exactly six chunks, got %d", len(p)-1)
 	}
 	f := strings.Fields(p[0])
-	if len(f) > 0 && f[0] == "<use_absolute>" {
+	if len(f) > 0 && f[0] == "<|use_abs|>" {
 		a.Absolute = true
 		f = f[1:]
 	}

@@ -72,7 +72,7 @@ ACK-only history. Set `LUMINE_TEST_PROCESSOR` to the saved test checkpoint to ru
 the exact-ID regressions; a missing checkpoint skips them rather than asserting
 identity from a vocabulary count. No GPU is used.
 
-Custom IDs remain action_start 151669, action_end 151670, use_absolute 151671,
+Custom IDs remain action_start 151669, action_end 151670, use_abs 151671,
 thought_start 151672, thought_end 151673, Eleven 151674 and Twelve 151675.
 The remaining thirty words are not custom-token requirements. Their parser
 allowlist and existing vocabulary stay intact.

@@ -36,7 +36,7 @@ func TestPadding(t *testing.T) {
 	}
 }
 func TestTrainingRequest(t *testing.T) {
-	const action = "<|action_start|><use_absolute> 10 20 0 ; W ; ; ; ; ; <|action_end|>"
+	const action = "<|action_start|><|use_abs|> 10 20 0 ; W ; ; ; ; ; <|action_end|>"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" || r.Method != "POST" || r.Header.Get("Authorization") != "Bearer test-secret" {
 			t.Errorf("wrong request metadata")
