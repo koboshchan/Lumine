@@ -48,3 +48,26 @@ Optional settings are `LUMINE_MEMORY_TIMEOUT` (default 30 seconds) and `LUMINE_M
 CPU tests include deliberately blocked real thumbnail preparation and deliberately blocked real summary awaits while a separate action HTTP request completes before either blocker is released. They also exercise separate real HTTP upstream connections, immutable-prefix/suffix adoption, coalescing and byte admission, reset/reuse and TTL invalidation, failure preservation, strict acknowledgment cutoffs, native processor grids, and cancellation draining. These are deterministic dependency tests, not GPU timing benchmarks.
 
 Training hold remains in force. This online worker's causal evidence selection and rolling note generation are not yet accepted as identical to the annotation/training builder.
+
+
+Action tokenizer identity
+
+The adapter checks all 37 registered action-vocabulary entries against the exact
+IDs frozen from the hash-verified `lumine/test-2026-10-29/` checkpoint. It fails
+closed on different IDs, even if every entry is still individually atomic.
+History contains only runner-acknowledged executed actions, serialized verbatim
+with the training action delimiters, six semicolon-separated key chunks and
+optional absolute-position marker. Pending predictions are never history.
+
+These are 37 registered vocabulary entries, NOT 37 newly added context-invariant
+special tokens. Seven were newly added; thirty key-name entries already existed
+in the base vocabulary and use leading-space BPE IDs in canonical action strings
+(e.g. bare `Nine` is 83329, but ` Nine` is 37066). This is the saved test model's
+actual tokenizer behavior, preserved rather than silently changing training
+serialization. Output is decoded by the local model server, then validated by
+the proxy's strict text action parser. Thought markers are not executable actions.
+Exact saved-checkpoint tests verify all standalone IDs, full serialized action
+ID sequences inside native prompts, output decode/parser roundtrips, and HTTP
+ACK-only history. Set `LUMINE_TEST_PROCESSOR` to the saved test checkpoint to run
+the exact-ID regressions; a missing checkpoint skips them rather than asserting
+identity from a vocabulary count. No GPU is used.
