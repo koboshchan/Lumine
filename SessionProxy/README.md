@@ -52,22 +52,27 @@ Training hold remains in force. This online worker's causal evidence selection a
 
 Action tokenizer identity
 
-The adapter checks all 37 registered action-vocabulary entries against the exact
+The adapter checks only the seven genuinely new custom tokens against the exact
 IDs frozen from the hash-verified `lumine/test-2026-10-29/` checkpoint. It fails
 closed on different IDs, even if every entry is still individually atomic.
 History contains only runner-acknowledged executed actions, serialized verbatim
 with the training action delimiters, six semicolon-separated key chunks and
 optional absolute-position marker. Pending predictions are never history.
 
-These are 37 registered vocabulary entries, NOT 37 newly added context-invariant
+The separate 37-entry action-vocabulary test fixture is NOT 37 newly added context-invariant
 special tokens. Seven were newly added; thirty key-name entries already existed
 in the base vocabulary and use leading-space BPE IDs in canonical action strings
 (e.g. bare `Nine` is 83329, but ` Nine` is 37066). This is the saved test model's
 actual tokenizer behavior, preserved rather than silently changing training
 serialization. Output is decoded by the local model server, then validated by
 the proxy's strict text action parser. Thought markers are not executable actions.
-Exact saved-checkpoint tests verify all standalone IDs, full serialized action
+Exact saved-checkpoint tests retain all 37 standalone IDs as compatibility evidence, not custom-token requirements, and verify full serialized action
 ID sequences inside native prompts, output decode/parser roundtrips, and HTTP
 ACK-only history. Set `LUMINE_TEST_PROCESSOR` to the saved test checkpoint to run
 the exact-ID regressions; a missing checkpoint skips them rather than asserting
 identity from a vocabulary count. No GPU is used.
+
+Custom IDs remain action_start 151669, action_end 151670, use_absolute 151671,
+thought_start 151672, thought_end 151673, Eleven 151674 and Twelve 151675.
+The remaining thirty words are not custom-token requirements. Their parser
+allowlist and existing vocabulary stay intact.

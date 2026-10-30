@@ -6,15 +6,15 @@ from pathlib import Path
 
 
 
-def validate_action_token_ids(tokenizer):
-    # Frozen from the hash-verified lumine/test-2026-10-29 checkpoint, not
+def validate_custom_token_ids(tokenizer):
+    # Only seven genuinely added tokens, frozen from the hash-verified lumine/test-2026-10-29 checkpoint, not
     # generated from the tokenizer under test. Atomic-but-renumbered fails too.
-    expected = json.loads(Path(__file__).with_name("action_token_ids.json").read_text())
+    expected = json.loads(Path(__file__).with_name("custom_token_ids.json").read_text())
     for token, token_id in expected.items():
         if (tokenizer.encode(token, add_special_tokens=False) != [token_id] or
                 tokenizer.convert_tokens_to_ids(token) != token_id or
                 tokenizer.decode([token_id], skip_special_tokens=False) != token):
-            raise ValueError("checkpoint action token IDs differ from test model")
+            raise ValueError("checkpoint custom token IDs differ from test model")
 
 
 @lru_cache(maxsize=1)
@@ -32,7 +32,7 @@ def _tokenizer():
     tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True, trust_remote_code=False)
     if not tokenizer.chat_template:
         raise ValueError("saved native chat template required")
-    validate_action_token_ids(tokenizer)
+    validate_custom_token_ids(tokenizer)
     for token in ("<|image_pad|>",):
         if len(tokenizer.encode(token, add_special_tokens=False)) != 1:
             raise ValueError("checkpoint tokenizer missing required intact tokens")

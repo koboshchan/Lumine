@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 
 import pytest
-from SessionProxy.adapter import validate_action_token_ids
+from SessionProxy.adapter import validate_custom_token_ids
 from SessionProxy.service import KEYS, parse_completion
 
-EXPECTED = json.loads(Path(__file__).with_name("action_token_ids.json").read_text())
+EXPECTED = json.loads(Path(__file__).with_name("action_vocab_ids.json").read_text())
+CUSTOM = json.loads(Path(__file__).with_name("custom_token_ids.json").read_text())
 CHECKPOINT_HASHES = {
     "action-token-ids.json": "eddd403036b5421d6b1e0d3530049c4221649dd153f72eef1fcc31ec28cecba2",
     "tokenizer.json": "5a31e67a9e3ade8cb3f163fba155a864a26fd17e076eeee00ccc148d8af3a989",
@@ -31,12 +32,19 @@ def test_atomic_but_wrong_ids_fail_closed():
             return self.vocab[token]
         def decode(self, ids, **kw):
             return next(k for k, v in self.vocab.items() if v == ids[0])
-    validate_action_token_ids(Tokenizer(0))
+    assert len(CUSTOM) == 7
+    assert set(CUSTOM) == {"<|action_start|>", "<|action_end|>", "<use_absolute>",
+                           "<|thought_start|>", "<|thought_end|>", "Eleven", "Twelve"}
+    validate_custom_token_ids(Tokenizer(0))
+    base_only_changed = Tokenizer(0)
+    for key in EXPECTED.keys() - CUSTOM.keys():
+        base_only_changed.vocab[key] += 1
+    validate_custom_token_ids(base_only_changed)  # thirty words aren't custom checks
     with pytest.raises(ValueError, match="IDs differ"):
-        validate_action_token_ids(Tokenizer(1))
+        validate_custom_token_ids(Tokenizer(1))
 
 
-def test_parser_all_executable_custom_tokens_and_no_thought_execution():
+def test_parser_all_action_vocabulary_entries_and_no_thought_execution():
     assert len(EXPECTED) == 37 and len(set(EXPECTED.values())) == 37
     structural = {"<|action_start|>", "<|action_end|>", "<use_absolute>",
                   "<|thought_start|>", "<|thought_end|>"}
@@ -68,12 +76,12 @@ def test_real_checkpoint_ids_rendered_ack_and_decoded_output(monkeypatch):
         assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected_hash
     assert json.loads((root / "action-token-ids.json").read_text()) == EXPECTED
     tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True, trust_remote_code=False)
-    validate_action_token_ids(tokenizer)
+    validate_custom_token_ids(tokenizer)
     monkeypatch.setenv("LUMINE_PROCESSOR_DIR", str(root))
     _tokenizer.cache_clear()
     try:
         active = _tokenizer()
-        validate_action_token_ids(active)
+        validate_custom_token_ids(active)
         structural = {"<|action_start|>", "<|action_end|>", "<use_absolute>",
                       "<|thought_start|>", "<|thought_end|>"}
         contextual_keys = EXPECTED.keys() - structural
@@ -169,3 +177,42 @@ async def test_real_http_only_matching_executed_ack_enters_history(monkeypatch):
             assert proxy.sessions[sid].pending["action_id"] == third["action_id"]
     finally:
         _tokenizer.cache_clear()
+
+
+@pytest.mark.skipif(not os.environ.get('LUMINE_TEST_PROCESSOR'), reason='hash-checked saved checkpoint required')
+def test_before_after_seven_custom_change_preserves_all_30_contextual_words(monkeypatch):
+    import hashlib
+    from transformers import AutoTokenizer
+    from SessionProxy.adapter import _tokenizer, build_step
+    from lumine_memory.live import _native
+    from lumine_memory.prompt import render_text
+    root=Path(os.environ['LUMINE_TEST_PROCESSOR'])
+    for n,h in CHECKPOINT_HASHES.items():assert hashlib.sha256((root/n).read_bytes()).hexdigest()==h
+    monkeypatch.setenv('LUMINE_PROCESSOR_DIR', str(root))
+    _tokenizer.cache_clear()
+    t=AutoTokenizer.from_pretrained(root,local_files_only=True,trust_remote_code=False)
+    active=_tokenizer()
+    keys=sorted(set(EXPECTED)-{'<|action_start|>','<|action_end|>','<use_absolute>','<|thought_start|>','<|thought_end|>','Eleven','Twelve'})
+    rows=[]
+    for key in keys:
+     for absolute in (False,True):
+      for position in range(6):
+       chunks=['']*6;chunks[position]=key
+       movement='<use_absolute> 1279 719 -5' if absolute else '-995 996 5'
+       text='<|action_start|>'+movement+' ; '+' ; '.join(chunks)+'<|action_end|>'
+       first=build_step(state={},frame='f1',executed=None,now=1,protocol='tiered-v1',max_input_tokens=30000,allow_compaction=False)
+       second=build_step(state=first['state'],frame='f2',executed={'frame':'f1','action':text},now=1.2,protocol='tiered-v1',max_input_tokens=30000,allow_compaction=False)
+       rendered=render_text(_native(second['messages']),active.apply_chat_template,[920,920])
+       ids=active.encode(text,add_special_tokens=False);prompt_ids=active.encode(rendered,add_special_tokens=False)
+       assert ids==t.encode(text,add_special_tokens=False)
+       assert active.decode(ids,skip_special_tokens=False)==text
+       rows.append({'key':key,'absolute':absolute,'position':position,'text':text,'ids':ids,'prompt_ids':prompt_ids})
+    new={k:v for k,v in EXPECTED.items() if v>=151669}
+    assert len(new)==7
+    for k,v in new.items():assert active.encode(k,add_special_tokens=False)==[v]
+
+    raw=json.dumps({'custom_ids':new,'rows':rows},sort_keys=True,separators=(',',':')).encode()
+    # Recorded before changing the old 37-entry guard to the seven-only guard.
+    assert len(rows)==360
+    assert hashlib.sha256(raw).hexdigest()=='308ea29261cafd582fdd5fdf875b6f42869ae8d90219df5d00b1e7b47797d222'
+    _tokenizer.cache_clear()
