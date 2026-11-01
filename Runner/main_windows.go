@@ -64,7 +64,6 @@ const (
 	statusID      = 109
 	actionID      = 110
 	proxyID       = 111
-	captureID     = 112
 	obsAddressID  = 113
 	obsPortID     = 114
 	obsPasswordID = 115
@@ -127,7 +126,6 @@ func start() {
 		return
 	}
 	cfg := Config{Endpoint: strings.TrimSpace(text(controls[endpointID])), Model: strings.TrimSpace(text(controls[modelID])), APIKey: text(controls[keyID]), Proxy: call(user, "SendMessageW", controls[proxyID], 0xf0, 0, 0) == 1, Dry: call(user, "SendMessageW", controls[dryID], 0xf0, 0, 0) == 1, Window: choices[idx].Handle}
-	cfg.CaptureOBS = call(user, "SendMessageW", controls[captureID], 0x147, 0, 0) == 1
 	cfg.OBS = OBSConfig{Address: strings.TrimSpace(text(controls[obsAddressID])), Port: strings.TrimSpace(text(controls[obsPortID])), Password: text(controls[obsPasswordID]), Source: strings.TrimSpace(text(controls[obsSourceID]))}
 	// Never persist the password; clear the masked control after transferring
 	// ownership to the session. No credential defaults or settings file.
@@ -176,31 +174,20 @@ func run(ctx context.Context, cfg Config, sink *winSink) {
 	state.Lock()
 	state.armed = true
 	state.Unlock()
-	captureName := "GDI"
+	captureName := "OBS"
+	status("Connecting to OBS WebSocket v5. OBS is required; F8 cancels.")
+	obs, err := DialOBS(ctx, cfg.OBS)
+	cfg.OBS.Password = ""
+	if err != nil {
+		status("Stopped: OBS WebSocket v5 required: " + err.Error() + ". Open OBS and enable its WebSocket server.")
+		return
+	}
+	defer obs.Close()
 	captureFrame := func(ctx context.Context) (*image.RGBA, error) {
-		if err := ctx.Err(); err != nil {
+		if err := ready(cfg.Window); err != nil {
 			return nil, err
 		}
-		return capture(cfg.Window)
-	}
-	if cfg.CaptureOBS {
-		captureName = "OBS"
-		status("Connecting to OBS. F8 cancels; OBS failure never switches to GDI.")
-		obs, err := DialOBS(ctx, cfg.OBS)
-		cfg.OBS.Password = ""
-		if err != nil {
-			status("Stopped: " + err.Error() + ". Select GDI explicitly to use fallback.")
-			return
-		}
-		defer obs.Close()
-		captureFrame = func(ctx context.Context) (*image.RGBA, error) {
-			if err := ready(cfg.Window); err != nil {
-				return nil, err
-			}
-			return obs.Capture(ctx)
-		}
-	} else {
-		cfg.OBS.Password = ""
+		return obs.Capture(ctx)
 	}
 	samples, captureDone := captureLatest(ctx, captureFrame, func(f *image.RGBA) {
 		state.Lock()
@@ -329,14 +316,6 @@ func windowProc(h uintptr, m uint32, w, l uintptr) uintptr {
 	switch m {
 	case 0x111:
 		switch int(w & 65535) {
-		case captureID:
-			if (w>>16)&65535 == 1 {
-				if call(user, "SendMessageW", controls[captureID], 0x147, 0, 0) == 1 {
-					status("Ready / OBS selected. OBS must stay open; no automatic GDI fallback.")
-				} else {
-					status("Ready / GDI fallback selected. Target must stay visible and focused.")
-				}
-			}
 		case refreshID:
 			refresh()
 		case startID:
@@ -361,7 +340,7 @@ func windowProc(h uintptr, m uint32, w, l uintptr) uintptr {
 		if active {
 			enabled = 0
 		}
-		for _, id := range []int{endpointID, modelID, keyID, windowID, refreshID, dryID, proxyID, captureID, obsAddressID, obsPortID, obsPasswordID, obsSourceID, startID} {
+		for _, id := range []int{endpointID, modelID, keyID, windowID, refreshID, dryID, proxyID, obsAddressID, obsPortID, obsPasswordID, obsSourceID, startID} {
 			call(user, "EnableWindow", controls[id], enabled)
 		}
 		var r = rect{20, 388, 820, 838}
@@ -417,10 +396,7 @@ func main() {
 	child("COMBOBOX", "", windowID, 112, 114, 600, 350, 0x00210003)
 	child("BUTTON", "Refresh", refreshID, 722, 114, 98, 26, 0x10000)
 	child("STATIC", "Capture", 0, 20, 155, 90, 22, 0)
-	child("COMBOBOX", "", captureID, 112, 152, 300, 160, 0x00210003)
-	call(user, "SendMessageW", controls[captureID], 0x143, 0, sp("GDI / visible target (fallback)"))
-	call(user, "SendMessageW", controls[captureID], 0x143, 0, sp("OBS / game capture or program scene"))
-	call(user, "SendMessageW", controls[captureID], 0x14e, 0, 0)
+	child("STATIC", "OBS WebSocket v5 only", 0, 112, 155, 300, 22, 0)
 	child("STATIC", "Blank source = current program scene", 0, 430, 155, 390, 22, 0)
 	child("STATIC", "OBS address", 0, 20, 192, 90, 22, 0)
 	child("EDIT", "ws://127.0.0.1", obsAddressID, 112, 189, 430, 25, 0x00810080)
@@ -435,7 +411,7 @@ func main() {
 	child("BUTTON", "Session proxy mode", proxyID, 280, 267, 200, 28, 0x10003)
 	child("BUTTON", "Start / 5s countdown", startID, 490, 263, 200, 34, 0x10000)
 	child("BUTTON", "Stop / F8", stopID, 702, 263, 118, 34, 0x10000)
-	child("STATIC", "Ready / GDI selected. OBS must stay open for OBS mode. Dry run is enabled.", statusID, 20, 308, 800, 32, 0)
+	child("STATIC", "Ready / OBS WebSocket v5 required. Keep OBS open. Dry run is enabled.", statusID, 20, 308, 800, 32, 0)
 	child("EDIT", "", actionID, 20, 344, 800, 32, 0x00800884)
 	child("STATIC", "Capture preview   /   1280 x 720   /   confirm source in dry run", 0, 20, 847, 800, 22, 0)
 	if call(user, "RegisterHotKey", mainWindow, 1, 0x4000, 0x77) == 0 {

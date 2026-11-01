@@ -31,7 +31,6 @@ type Config struct {
 	Endpoint, Model, APIKey string
 	Dry, Proxy              bool
 	Window                  uintptr
-	CaptureOBS              bool
 	OBS                     OBSConfig
 }
 type Client struct{ HTTP *http.Client }

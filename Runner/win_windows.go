@@ -5,7 +5,6 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"image"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -104,55 +103,6 @@ type bitmapInfo struct {
 
 func bmpInfo(w, h int32) bitmapInfo {
 	return bitmapInfo{Size: 40, Width: w, Height: -h, Planes: 1, BitCount: 32}
-}
-func capture(w uintptr) (*image.RGBA, error) {
-	if err := ready(w); err != nil {
-		return nil, err
-	}
-	r, err := geometry(w)
-	if err != nil {
-		return nil, err
-	}
-	// Visible foreground client capture. Borderless/windowed only; no hidden-window capture.
-	screen := call(user, "GetDC", 0)
-	if screen == 0 {
-		return nil, fmt.Errorf("GetDC failed")
-	}
-	defer call(user, "ReleaseDC", 0, screen)
-	dc := call(gdi, "CreateCompatibleDC", screen)
-	if dc == 0 {
-		return nil, fmt.Errorf("CreateCompatibleDC failed")
-	}
-	defer call(gdi, "DeleteDC", dc)
-	bi := bmpInfo(1280, 720)
-	var bits unsafe.Pointer
-	bitmap := call(gdi, "CreateDIBSection", screen, uintptr(unsafe.Pointer(&bi)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
-	if bitmap == 0 || bits == nil {
-		return nil, fmt.Errorf("CreateDIBSection failed")
-	}
-	defer call(gdi, "DeleteObject", bitmap)
-	old := call(gdi, "SelectObject", dc, bitmap)
-	defer call(gdi, "SelectObject", dc, old)
-	// HALFTONE downscales other 16:9 clients; native 1280x720 stays pixel-aligned.
-	call(gdi, "SetStretchBltMode", dc, 4)
-	call(gdi, "SetBrushOrgEx", dc, 0, 0, 0)
-	ok := call(gdi, "StretchBlt", dc, 0, 0, 1280, 720, screen, uintptr(r.L), uintptr(r.T), uintptr(r.R-r.L), uintptr(r.B-r.T), 0x00CC0020)
-	call(gdi, "GdiFlush")
-	if ok == 0 {
-		return nil, fmt.Errorf("foreground capture failed")
-	}
-	raw := unsafe.Slice((*byte)(bits), 1280*720*4)
-	img := image.NewRGBA(image.Rect(0, 0, 1280, 720))
-	for i := 0; i < len(raw); i += 4 {
-		img.Pix[i] = raw[i+2]
-		img.Pix[i+1] = raw[i+1]
-		img.Pix[i+2] = raw[i]
-		img.Pix[i+3] = 255
-	}
-	if err := ready(w); err != nil {
-		return nil, err
-	}
-	return img, nil
 }
 
 // Windows x64 INPUT is 40 bytes with union at offset 8.
