@@ -10,11 +10,16 @@ ROOT = Path(__file__).resolve().parent
 SYSTEM = "Predict the next game input. Reply with only the action string."
 
 
-def resize(image, width):
+def prepared_image(row, width):
+    """Decode the independently pre-resized lossless image, never resample."""
     from PIL import Image
+    key = 'thumbnail' if width == 320 else 'image'
+    image = row[key]
     if isinstance(image, dict):
         image = Image.open(io.BytesIO(image['bytes']))
-    return image.convert('RGB').resize((width, round(image.height * width / image.width)))
+    if image.mode != 'RGB' or image.size != (width, round(width * 9 / 16)):
+        raise ValueError('Expected pinned pre-resized RGB training image')
+    return image
 
 
 class HistoryDataset:
@@ -26,7 +31,7 @@ class HistoryDataset:
         self.reader = NormalizedReader(index)
         self.ids = self.reader.ids(split)
         self.rows, self.config = rows, config
-        meta = rows.remove_columns(['image', 'action'])
+        meta = rows.remove_columns(['image', 'thumbnail', 'action'])
         self.lookup = {(r['session'], r['frame_index']): i for i, r in enumerate(meta)}
 
     def __len__(self):
@@ -84,7 +89,7 @@ class ActionCollator:
                 width = c['thumbnail_width'] if tier == 'middle' else c['frame_width']
                 messages.append({'role': 'user', 'content': [
                     {'type': 'text', 'text': f"[{tier} {row['timestamp_s']:.3f}s]"},
-                    {'type': 'image', 'image': resize(row['image'], width)}]})
+                    {'type': 'image', 'image': prepared_image(row, width)}]})
                 if tier != 'current':
                     # Past actions are observations, NOT supervised assistant turns.
                     messages.append({'role': 'user', 'content': f"Previous action: {row['action']}"})

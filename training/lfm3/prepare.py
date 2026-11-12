@@ -41,8 +41,36 @@ def prepare_registry(root, config):
     remote = json.loads(fetch(f'{prefix}/objects/{remote_sha}', root / 'source-config.json', remote_sha).read_text())
     if len(remote['shards']) != 94:
         raise ValueError('Unexpected source inventory')
-    for row in remote['shards']:
+    # Keep the immutable original lineage, but verify the resized representation.
+    import urllib.request
+    manifest_path = root / 'resize-manifest.json'
+    if not manifest_path.exists() or sha(manifest_path) != config['resize_manifest_sha256']:
+        url = (f"https://huggingface.co/datasets/{config['dataset']}/resolve/"
+               f"{config['dataset_revision']}/resize-manifest.json")
+        with urllib.request.urlopen(url) as response:
+            content = response.read()
+        if hashlib.sha256(content).hexdigest() != config['resize_manifest_sha256']:
+            raise ValueError('Resized dataset manifest hash mismatch')
+        manifest_path.write_bytes(content)
+    resized = json.loads(manifest_path.read_text())
+    verify_resized_shards(root, resized, remote['shards'])
+    return index
+
+
+def verify_resized_shards(root, resized, original_shards):
+    """Bind prepared files to both their pixels and immutable source lineage."""
+    root = Path(root)
+    originals = {row['file']: row for row in original_shards}
+    if len(resized['shards']) != len(originals):
+        raise ValueError('Resized source inventory mismatch')
+    seen = set()
+    for row in resized['shards']:
+        if row['file'] in seen:
+            raise ValueError('Duplicate resized shard')
+        seen.add(row['file'])
+        original = originals[row['file']]
+        if row['source_sha256'] != original['sha256'] or row['source_bytes'] != original['bytes']:
+            raise ValueError('Resized shard differs from immutable source lineage')
         path = root / row['file']
         if path.stat().st_size != row['bytes'] or sha(path) != row['sha256']:
-            raise ValueError('Dataset shard hash mismatch')
-    return index
+            raise ValueError('Resized dataset shard hash mismatch')
