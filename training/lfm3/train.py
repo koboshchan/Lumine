@@ -3,11 +3,49 @@ import argparse
 import io
 import json
 import os
+import random
+import math
 import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SYSTEM = "Predict the next game input. Reply with only the action string."
+
+
+# Exact server bootstrap spelling, including the double spaces between separators.
+BOOTSTRAP_ACTION = '<|action_start|>0 0 0 ;  ;  ;  ;  ;  ; <|action_end|>'
+
+
+def select_targets(dataset, count, seed):
+    """Select targets only; leave the full source rows and causal reader untouched."""
+    if count < 0:
+        raise ValueError('subset must be nonnegative (0 means full training set)')
+    if count > len(dataset):
+        raise ValueError('subset exceeds the number of training targets')
+    if count:
+        dataset.ids = [dataset.ids[i] for i in sorted(
+            random.Random(seed).sample(range(len(dataset)), count))]
+    return dataset
+
+
+def bootstrap_sample(sample, recent_frames):
+    """Synthetic idle startup: repeat the current image, never mislabel moving history.
+
+    Live bootstrap captures distinct actual idle frames; repeated current images are
+    a stationary-scene proxy, not a claim that recorded historical inputs were idle.
+    Server-relative timestamps and the exact no-input action match its renderer.
+    """
+    recent = [dict(sample['current'], timestamp_s=i * 0.1, action=BOOTSTRAP_ACTION)
+              for i in range(recent_frames)]
+    return dict(current=dict(sample['current'], timestamp_s=recent_frames * 0.1),
+                recent=recent, middle=[], notes=[])
+
+
+def final_checkpoint_control(state, control):
+    # Include non-save_steps-aligned endings, with optimizer/RNG state and uploads.
+    if state.global_step >= state.max_steps:
+        control.should_save = True
+    return control
 
 
 def prepared_image(row, width):
@@ -24,13 +62,14 @@ def prepared_image(row, width):
 
 class HistoryDataset:
     """Pinned annotation registry supplies verified, recursive causal memory."""
-    def __init__(self, rows, config, index, split):
+    def __init__(self, rows, config, index, split, bootstrap_prob=0.0, bootstrap_seed=42):
         import sys
         sys.path.insert(0, str(ROOT / 'legacy'))
         from reader import NormalizedReader
         self.reader = NormalizedReader(index)
         self.ids = self.reader.ids(split)
         self.rows, self.config = rows, config
+        self.bootstrap_prob, self.bootstrap_seed = bootstrap_prob, bootstrap_seed
         meta = rows.remove_columns(['image', 'thumbnail', 'action'])
         self.lookup = {(r['session'], r['frame_index']): i for i, r in enumerate(meta)}
 
@@ -60,9 +99,13 @@ class HistoryDataset:
             if hashlib.sha256(row['action'].encode()).hexdigest() != meta['action_sha256']:
                 raise ValueError('Source action differs from verified annotation index')
             return row
-        return {'current': image_row(next(f for f in frames if f['id'] == raw['target_id'])),
+        sample = {'current': image_row(next(f for f in frames if f['id'] == raw['target_id'])),
                 'recent': [image_row(f) for f in recent],
                 'middle': [image_row(f) for f in middle], 'notes': raw['notes']}
+        # Stable across workers, restarts and subset ordering; validation stays clean.
+        if random.Random(f'{self.bootstrap_seed}:{self.ids[i]}').random() < self.bootstrap_prob:
+            return bootstrap_sample(sample, self.config['recent_frames'])
+        return sample
 
 
 class ActionCollator:
@@ -152,13 +195,26 @@ def main():
     parser.add_argument('--output', default='/content/lumine-output')
     parser.add_argument('--config', default=str(ROOT / 'config.json'))
     parser.add_argument('--max-steps', type=int, default=-1)
+    parser.add_argument('--subset', type=int, default=0, help='Random training targets; 0 keeps all')
+    parser.add_argument('--subset-seed', type=int, default=42)
+    parser.add_argument('--bootstrap-prob', type=float, default=0.1,
+                        help='Fraction of synthetic idle-start training targets; 0 disables')
     parser.add_argument('--resume')
     parser.add_argument('--action-special-tokens', action='store_true',
                         help='NEXT FRESH run only: add eight action tokens with old-subword mean init')
     parser.add_argument('--keep-remote', type=int, default=2)
     parser.add_argument('--workers', type=int, default=min(4, os.cpu_count() or 1))
     args = parser.parse_args()
+    if args.max_steps == 0 or args.max_steps < -1:
+        parser.error('--max-steps must be positive, or -1 for the configured epochs')
+    if args.subset < 0 or not 0 <= args.bootstrap_prob <= 1:
+        parser.error('--subset must be nonnegative and --bootstrap-prob must be in [0, 1]')
     c = json.loads(Path(args.config).read_text())
+    # Persist data selection/augmentation in every checkpoint's resume provenance.
+    if args.subset:
+        c.update(subset=args.subset, subset_seed=args.subset_seed)
+    if args.bootstrap_prob:
+        c.update(bootstrap_prob=args.bootstrap_prob, bootstrap_seed=args.subset_seed)
     if c.get('action_special_tokens') and not args.action_special_tokens:
         parser.error('Tokenized policy requires --action-special-tokens; this path supports fresh runs only')
     if args.action_special_tokens:
@@ -216,18 +272,30 @@ def main():
 
     # Select target IDs, not source rows: historical frame lookup stays intact.
     validation = HistoryDataset(data['validation'], c, index, 'validation')
-    import random
     validation.ids = [validation.ids[i] for i in sorted(
         random.Random(42).sample(range(len(validation)), min(256, len(validation))))]
     print(f'Evaluation: fixed {len(validation)} targets, every 500 optimizer steps', flush=True)
 
+    training = select_targets(HistoryDataset(data['train'], c, index, 'train',
+        bootstrap_prob=args.bootstrap_prob, bootstrap_seed=args.subset_seed), args.subset, args.subset_seed)
+    effective_batch = c['gradient_accumulation_steps'] * int(os.environ.get('WORLD_SIZE', '1'))
+    steps_per_epoch = math.ceil(math.ceil(len(training) / int(os.environ.get('WORLD_SIZE', '1'))) /
+                                c['gradient_accumulation_steps'])
+    print(f'Training: {len(training)} targets; effective batch {effective_batch}; '
+          f'{steps_per_epoch} optimizer steps/epoch; max_steps={args.max_steps}; '
+          f'epoch equivalents={args.max_steps / steps_per_epoch if args.max_steps > 0 else c["epochs"]:.3f}',
+          flush=True)
+
     class EvaluationSchedule(TrainerCallback):
+        def on_step_end(self, training_args, state, control, **kwargs):
+            return final_checkpoint_control(state, control)
+
         def on_train_begin(self, training_args, state, control, **kwargs):
             # Trainer restores the old cadence from trainer_state.json on resume.
             state.eval_steps = 500
 
     trainer = Trainer(model=model, processing_class=processor,
-        train_dataset=HistoryDataset(data['train'], c, index, 'train'),
+        train_dataset=training,
         eval_dataset=validation,
         data_collator=ActionCollator(processor, c), callbacks=[BucketCheckpoint(), EvaluationSchedule()],
         args=TrainingArguments(output_dir=str(output), bf16=True, fp16=False,
@@ -258,6 +326,7 @@ def main():
     if action_token_audit is not None:
         from action_tokens import save_action_tokens
         save_action_tokens(final, action_token_audit)
+    shutil.copy(policy, final / policy.name)
     write_license(final, c)
     HfApi().sync_bucket(str(final), f"{c['bucket']}/{run}/final", delete=False)
     # Publishing to final_model_repo remains an explicit, separate user decision.
