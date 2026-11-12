@@ -1,0 +1,21 @@
+{
+  "model": "LiquidAI/LFM3-VL-2B",
+  "model_revision": "23387beda43c60310348e83e25f78f33c3140d3a",
+  "dataset": "koboshchan/genshinPlayData2",
+  "dataset_revision": "6f75ffb6c0ac670a51aa2b586315f0aa33156586",
+  "final_model_repo": "koboshchan/Lumine-Mini-2B",
+  "bucket": "hf://buckets/koboshchan/checkpoints",
+  "history_tokens": 4096,
+  "frame_width": 640,
+  "thumbnail_width": 320,
+  "recent_frames": 8,
+  "middle_stride": 10,
+  "middle_horizon": 1500,
+  "learning_rate": 2e-05,
+  "epochs": 1,
+  "gradient_accumulation_steps": 8,
+  "save_steps": 100,
+  "note_tokens": 1024,
+  "index_sha256": "bb3d4700da9814a7970b4a97b7ada8372b1745c838d63142b4e4d57cb4c8a2ea",
+  "payload_manifest_sha256": "8958a899b0405c22c7e91c77a21801ff091fd8c458fa4d124f00b6ddb089f62f"
+}

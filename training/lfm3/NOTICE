@@ -1,0 +1,8 @@
+LFM3-VL-2B by Liquid AI, Inc.
+Upstream https://huggingface.co/LiquidAI/LFM3-VL-2B
+Revision 23387beda43c60310348e83e25f78f33c3140d3a
+Licensed under LFM Open License v1.0, reproduced in LICENSE-LFM.
+Upstream publishes LICENSE but no separate NOTICE at this revision.
+Modified files: chat_template.jinja defaults thinking off and removes three
+empty-think insertions. Future trained weights are derivatives of LFM3-VL-2B.
+Lumine training Python code remains under the repository MIT license.
