@@ -153,10 +153,18 @@ def main():
     parser.add_argument('--config', default=str(ROOT / 'config.json'))
     parser.add_argument('--max-steps', type=int, default=-1)
     parser.add_argument('--resume')
+    parser.add_argument('--action-special-tokens', action='store_true',
+                        help='NEXT FRESH run only: add eight action tokens with old-subword mean init')
     parser.add_argument('--keep-remote', type=int, default=2)
     parser.add_argument('--workers', type=int, default=min(4, os.cpu_count() or 1))
     args = parser.parse_args()
     c = json.loads(Path(args.config).read_text())
+    if c.get('action_special_tokens') and not args.action_special_tokens:
+        parser.error('Tokenized policy requires --action-special-tokens; this path supports fresh runs only')
+    if args.action_special_tokens:
+        if args.resume:
+            parser.error('--action-special-tokens is for a fresh run, never an old checkpoint')
+        c['action_special_tokens'] = True
     import torch
     from datasets import load_dataset, Image as DatasetImage
     from transformers import AutoProcessor, AutoModelForImageTextToText, TrainerCallback, Trainer, TrainingArguments
@@ -168,6 +176,10 @@ def main():
     model = AutoModelForImageTextToText.from_pretrained(
         c['model'], revision=c['model_revision'], trust_remote_code=True,
         dtype=torch.bfloat16, attn_implementation='sdpa')
+    action_token_audit = None
+    if args.action_special_tokens:
+        from action_tokens import initialize_action_tokens
+        action_token_audit = initialize_action_tokens(processor, model)
     model.config.use_cache = False
     for parameter in model.parameters():
         parameter.requires_grad_(True)
@@ -195,6 +207,9 @@ def main():
         def on_save(self, training_args, state, control, **kwargs):
             checkpoint = output / f'checkpoint-{state.global_step}'
             processor.save_pretrained(checkpoint)
+            if action_token_audit is not None:
+                from action_tokens import save_action_tokens
+                save_action_tokens(checkpoint, action_token_audit)
             shutil.copy(policy, checkpoint / policy.name)
             write_license(checkpoint, c)
             uploads.submit(checkpoint)
@@ -240,6 +255,9 @@ def main():
     final = output / 'final'
     trainer.save_model(str(final))
     processor.save_pretrained(final)
+    if action_token_audit is not None:
+        from action_tokens import save_action_tokens
+        save_action_tokens(final, action_token_audit)
     write_license(final, c)
     HfApi().sync_bucket(str(final), f"{c['bucket']}/{run}/final", delete=False)
     # Publishing to final_model_repo remains an explicit, separate user decision.
