@@ -157,8 +157,7 @@ def main():
     c = json.loads(Path(args.config).read_text())
     import torch
     from datasets import load_dataset
-    from transformers import AutoProcessor, AutoModelForImageTextToText, TrainerCallback
-    from trl import SFTConfig, SFTTrainer
+    from transformers import AutoProcessor, AutoModelForImageTextToText, TrainerCallback, Trainer, TrainingArguments
     from huggingface_hub import HfApi
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise RuntimeError('Full training requires a BF16-capable GPU; use CPU tests for validation')
@@ -190,19 +189,19 @@ def main():
             write_license(checkpoint, c)
             HfApi().sync_bucket(str(checkpoint), f"{c['bucket']}/{run}/{checkpoint.name}", delete=False)
 
-    trainer = SFTTrainer(model=model, processing_class=processor,
+    trainer = Trainer(model=model, processing_class=processor,
         train_dataset=HistoryDataset(data['train'], c, index, 'train'),
         eval_dataset=HistoryDataset(data['validation'], c, index, 'validation'),
         data_collator=ActionCollator(processor, c), callbacks=[BucketCheckpoint()],
-        args=SFTConfig(output_dir=str(output), bf16=True, fp16=False,
+        args=TrainingArguments(output_dir=str(output), bf16=True, fp16=False,
             per_device_train_batch_size=1, per_device_eval_batch_size=1,
             gradient_accumulation_steps=c['gradient_accumulation_steps'],
             gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},
             learning_rate=c['learning_rate'], num_train_epochs=c['epochs'], max_steps=args.max_steps,
             save_steps=c['save_steps'], save_total_limit=2, save_only_model=False,
             eval_strategy='steps', eval_steps=c['save_steps'], logging_steps=10,
-            max_length=None, packing=False, assistant_only_loss=True,
-            dataset_kwargs={'skip_prepare_dataset': True}, remove_unused_columns=False,
+            # ActionCollator already constructs the assistant-only labels.
+            remove_unused_columns=False,
             dataloader_num_workers=0, seed=42, data_seed=42, report_to='none'))
     if args.resume:
         saved = Path(args.resume) / 'training-policy.json'
