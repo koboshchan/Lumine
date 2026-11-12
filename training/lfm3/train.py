@@ -193,17 +193,29 @@ def main():
             write_license(checkpoint, c)
             HfApi().sync_bucket(str(checkpoint), f"{c['bucket']}/{run}/{checkpoint.name}", delete=False)
 
+    # Select target IDs, not source rows: historical frame lookup stays intact.
+    validation = HistoryDataset(data['validation'], c, index, 'validation')
+    import random
+    validation.ids = [validation.ids[i] for i in sorted(
+        random.Random(42).sample(range(len(validation)), min(256, len(validation))))]
+    print(f'Evaluation: fixed {len(validation)} targets, every 500 optimizer steps', flush=True)
+
+    class EvaluationSchedule(TrainerCallback):
+        def on_train_begin(self, training_args, state, control, **kwargs):
+            # Trainer restores the old cadence from trainer_state.json on resume.
+            state.eval_steps = 500
+
     trainer = Trainer(model=model, processing_class=processor,
         train_dataset=HistoryDataset(data['train'], c, index, 'train'),
-        eval_dataset=HistoryDataset(data['validation'], c, index, 'validation'),
-        data_collator=ActionCollator(processor, c), callbacks=[BucketCheckpoint()],
+        eval_dataset=validation,
+        data_collator=ActionCollator(processor, c), callbacks=[BucketCheckpoint(), EvaluationSchedule()],
         args=TrainingArguments(output_dir=str(output), bf16=True, fp16=False,
             per_device_train_batch_size=1, per_device_eval_batch_size=1,
             gradient_accumulation_steps=c['gradient_accumulation_steps'],
             gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},
             learning_rate=c['learning_rate'], num_train_epochs=c['epochs'], max_steps=args.max_steps,
             save_steps=c['save_steps'], save_total_limit=2, save_only_model=False,
-            eval_strategy='steps', eval_steps=c['save_steps'], logging_steps=10,
+            eval_strategy='steps', eval_steps=500, prediction_loss_only=True, logging_steps=10,
             # ActionCollator already constructs the assistant-only labels.
             remove_unused_columns=False,
             dataloader_num_workers=args.workers,
