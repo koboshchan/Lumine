@@ -79,6 +79,10 @@ class CheckpointUploads:
         self.pending.append(self.pool.submit(self._upload, Path(checkpoint)))
 
     def _upload(self, checkpoint):
+        from huggingface_hub.utils import disable_progress_bars
+        # HF-only switch; do not redirect stdout or suppress Trainer's tqdm.
+        disable_progress_bars()
+        print(f'Checkpoint upload starting: {checkpoint.name}', flush=True)
         try:
             self._pack_upload_verify(checkpoint)
         except Exception as exc:
@@ -95,7 +99,8 @@ class CheckpointUploads:
         os.replace(partial, archive)
         size, sha = archive.stat().st_size, digest(archive)
         destination = f'{self.bucket}/{checkpoint.name}'
-        self.api.sync_bucket(str(staging), destination, delete=False)
+        self.api.sync_bucket(str(staging), destination, delete=False, quiet=True)
+        print(f'Checkpoint upload done: {checkpoint.name}; verifying remote bytes', flush=True)
         bucket, remote = bucket_parts(destination + '/' + archive.name)
         metadata = self.api.get_bucket_file_metadata(bucket, remote)
         if metadata.size != size:
