@@ -108,10 +108,10 @@ class ActionCollator:
             raise ValueError('Multimodal batches use microbatch=1; accumulate gradients instead')
         # Budget the real processor-expanded token sequence, not Qwen constants.
         sample = {k: list(v) if k != 'current' else v for k, v in samples[0].items()}
+        # This baseline never changes during history trimming; process it once.
+        current = self.encode({'current': sample['current'], 'recent': [], 'middle': []})
         while True:
             batch = self.encode(sample)
-            # Current frame + target are not history; measure them separately.
-            current = self.encode({'current': sample['current'], 'recent': [], 'middle': []})
             if batch['input_ids'].numel() - current['input_ids'].numel() <= self.config['history_tokens']:
                 break
             if sample['middle']:
@@ -153,10 +153,11 @@ def main():
     parser.add_argument('--config', default=str(ROOT / 'config.json'))
     parser.add_argument('--max-steps', type=int, default=-1)
     parser.add_argument('--resume')
+    parser.add_argument('--workers', type=int, default=min(4, os.cpu_count() or 1))
     args = parser.parse_args()
     c = json.loads(Path(args.config).read_text())
     import torch
-    from datasets import load_dataset
+    from datasets import load_dataset, Image as DatasetImage
     from transformers import AutoProcessor, AutoModelForImageTextToText, TrainerCallback, Trainer, TrainingArguments
     from huggingface_hub import HfApi
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
@@ -173,6 +174,9 @@ def main():
     index = prepare_registry(Path(args.dataset_dir), c)
     data = load_dataset('parquet', data_files={s: str(Path(args.dataset_dir) / 'data' / (s + '-*.parquet'))
                                              for s in ('train', 'validation')})
+    # Decode only the tier actually consumed, not both full and thumbnail images.
+    data = data.cast_column('image', DatasetImage(decode=False))
+    data = data.cast_column('thumbnail', DatasetImage(decode=False))
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     run = output.name
@@ -202,7 +206,11 @@ def main():
             eval_strategy='steps', eval_steps=c['save_steps'], logging_steps=10,
             # ActionCollator already constructs the assistant-only labels.
             remove_unused_columns=False,
-            dataloader_num_workers=0, seed=42, data_seed=42, report_to='none'))
+            dataloader_num_workers=args.workers,
+            dataloader_persistent_workers=args.workers > 0,
+            dataloader_prefetch_factor=2 if args.workers > 0 else None,
+            dataloader_multiprocessing_context='spawn' if args.workers > 0 else None,
+            dataloader_pin_memory=True, seed=42, data_seed=42, report_to='none'))
     if args.resume:
         saved = Path(args.resume) / 'training-policy.json'
         if not saved.exists() or json.loads(saved.read_text()) != c:
