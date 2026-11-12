@@ -67,8 +67,35 @@ def restore(source, output, api):
     return str(destination)
 
 
+
+def prune_remote(api, run_uri, keep=2, through_step=None):
+    """Only exact checkpoint-N/checkpoint-N.tar files within this run."""
+    import re
+    if keep < 1:
+        raise ValueError('--keep-remote must be at least 1')
+    bucket, prefix = bucket_parts(run_uri.rstrip('/') + '/placeholder')
+    prefix = prefix.rsplit('/', 1)[0] + '/'
+    pattern = re.compile(re.escape(prefix) + r'checkpoint-(\d+)/checkpoint-\1\.tar$')
+    checkpoints = []
+    for entry in api.list_bucket_tree(bucket, prefix=prefix, recursive=True):
+        match = pattern.fullmatch(entry.path)
+        if match and (through_step is None or int(match[1]) <= through_step):
+            checkpoints.append((int(match[1]), entry.path))
+    checkpoints.sort(reverse=True)
+    deleting = [path for _, path in checkpoints[keep:]]
+    if deleting:
+        api.batch_bucket_files(bucket, delete=deleting)
+        remaining = {entry.path for entry in api.list_bucket_tree(bucket, prefix=prefix, recursive=True)}
+        if remaining.intersection(deleting):
+            raise RuntimeError('Remote checkpoint pruning incomplete')
+    print(f'Remote retention: kept newest {keep}; removed {len(deleting)} checkpoint tar(s)', flush=True)
+
+
 class CheckpointUploads:
-    def __init__(self, output, bucket, api):
+    def __init__(self, output, bucket, api, keep_remote=2):
+        if keep_remote < 1:
+            raise ValueError('--keep-remote must be at least 1')
+        self.keep_remote = keep_remote
         self.output, self.bucket, self.api = Path(output), bucket.rstrip('/'), api
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='checkpoint-upload')
         self.pending = []
@@ -111,6 +138,8 @@ class CheckpointUploads:
             self.api.download_bucket_files(bucket, [(remote, str(downloaded))], raise_on_missing_files=True)
             if downloaded.stat().st_size != size or digest(downloaded) != sha:
                 raise ValueError('Remote SHA256 mismatch')
+        prune_remote(self.api, self.bucket, self.keep_remote,
+                     through_step=int(checkpoint.name.split('-')[-1]))
         self.verified.add(checkpoint)
         archive.unlink()
         staging.rmdir()

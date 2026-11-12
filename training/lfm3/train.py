@@ -153,6 +153,7 @@ def main():
     parser.add_argument('--config', default=str(ROOT / 'config.json'))
     parser.add_argument('--max-steps', type=int, default=-1)
     parser.add_argument('--resume')
+    parser.add_argument('--keep-remote', type=int, default=2)
     parser.add_argument('--workers', type=int, default=min(4, os.cpu_count() or 1))
     args = parser.parse_args()
     c = json.loads(Path(args.config).read_text())
@@ -186,7 +187,7 @@ def main():
     policy.write_text(json.dumps(c, indent=2))
 
     from checkpoint_io import CheckpointUploads, restore
-    uploads = CheckpointUploads(output, f"{c['bucket']}/{run}", HfApi())
+    uploads = CheckpointUploads(output, f"{c['bucket']}/{run}", HfApi(), keep_remote=args.keep_remote)
     if args.resume:
         args.resume = restore(args.resume, output, HfApi())
 
