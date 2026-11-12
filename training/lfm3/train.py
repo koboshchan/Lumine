@@ -185,13 +185,18 @@ def main():
         raise ValueError('Resume policy differs from original run')
     policy.write_text(json.dumps(c, indent=2))
 
+    from checkpoint_io import CheckpointUploads, restore
+    uploads = CheckpointUploads(output, f"{c['bucket']}/{run}", HfApi())
+    if args.resume:
+        args.resume = restore(args.resume, output, HfApi())
+
     class BucketCheckpoint(TrainerCallback):
         def on_save(self, training_args, state, control, **kwargs):
             checkpoint = output / f'checkpoint-{state.global_step}'
             processor.save_pretrained(checkpoint)
             shutil.copy(policy, checkpoint / policy.name)
             write_license(checkpoint, c)
-            HfApi().sync_bucket(str(checkpoint), f"{c['bucket']}/{run}/{checkpoint.name}", delete=False)
+            uploads.submit(checkpoint)
 
     # Select target IDs, not source rows: historical frame lookup stays intact.
     validation = HistoryDataset(data['validation'], c, index, 'validation')
@@ -214,7 +219,7 @@ def main():
             gradient_accumulation_steps=c['gradient_accumulation_steps'],
             gradient_checkpointing=True, gradient_checkpointing_kwargs={'use_reentrant': False},
             learning_rate=c['learning_rate'], num_train_epochs=c['epochs'], max_steps=args.max_steps,
-            save_steps=c['save_steps'], save_total_limit=2, save_only_model=False,
+            save_steps=c['save_steps'], save_total_limit=None, save_only_model=False,
             eval_strategy='steps', eval_steps=500, prediction_loss_only=True, logging_steps=10,
             # ActionCollator already constructs the assistant-only labels.
             remove_unused_columns=False,
@@ -227,7 +232,10 @@ def main():
         saved = Path(args.resume) / 'training-policy.json'
         if not saved.exists() or json.loads(saved.read_text()) != c:
             raise ValueError('Checkpoint provenance does not match training config')
-    trainer.train(resume_from_checkpoint=args.resume)
+    try:
+        trainer.train(resume_from_checkpoint=args.resume)
+    finally:
+        uploads.close()
     final = output / 'final'
     trainer.save_model(str(final))
     processor.save_pretrained(final)
