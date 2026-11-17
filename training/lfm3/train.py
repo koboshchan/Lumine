@@ -189,6 +189,30 @@ def write_license(output, config):
         'Modified weights and chat template; see NOTICE. Training code is MIT, weights are not.\n')
 
 
+def load_training_components(config, checkpoint, action_special_tokens, processor_class, model_class, dtype):
+    from resume import validate_action_tokenizer
+    source = checkpoint or config['model']
+    source_kwargs = {} if checkpoint else {'revision': config['model_revision']}
+    processor = processor_class.from_pretrained(source, trust_remote_code=True, **source_kwargs)
+    processor.chat_template = (ROOT / 'chat_template.jinja').read_text()
+    action_token_audit = None
+    if checkpoint and action_special_tokens:
+        action_token_audit = validate_action_tokenizer(checkpoint, processor.tokenizer)
+    model = model_class.from_pretrained(
+        source, trust_remote_code=True, **source_kwargs,
+        dtype=dtype, attn_implementation='sdpa')
+    if action_special_tokens:
+        if checkpoint:
+            vocab_size = len(processor.tokenizer)
+            if (model.get_input_embeddings().weight.shape[0] != vocab_size
+                    or model.get_output_embeddings().weight.shape[0] != vocab_size):
+                raise ValueError('Action-token resume mismatch: checkpoint embedding vocabulary')
+        else:
+            from action_tokens import initialize_action_tokens
+            action_token_audit = initialize_action_tokens(processor, model)
+    return processor, model, action_token_audit
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset-dir', required=True)
@@ -201,7 +225,7 @@ def main():
                         help='Fraction of synthetic idle-start training targets; 0 disables')
     parser.add_argument('--resume')
     parser.add_argument('--action-special-tokens', action='store_true',
-                        help='NEXT FRESH run only: add fifteen action tokens with old-subword mean init')
+                        help='Use fifteen action tokens; resume requires matching checkpoint tokenizer/IDs')
     parser.add_argument('--keep-remote', type=int, default=2)
     parser.add_argument('--workers', type=int, default=min(4, os.cpu_count() or 1))
     args = parser.parse_args()
@@ -216,10 +240,8 @@ def main():
     if args.bootstrap_prob:
         c.update(bootstrap_prob=args.bootstrap_prob, bootstrap_seed=args.subset_seed)
     if c.get('action_special_tokens') and not args.action_special_tokens:
-        parser.error('Tokenized policy requires --action-special-tokens; this path supports fresh runs only')
+        parser.error('Tokenized policy requires --action-special-tokens')
     if args.action_special_tokens:
-        if args.resume:
-            parser.error('--action-special-tokens is for a fresh run, never an old checkpoint')
         c['action_special_tokens'] = True
     import torch
     from datasets import load_dataset, Image as DatasetImage
@@ -227,15 +249,18 @@ def main():
     from huggingface_hub import HfApi
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise RuntimeError('Full training requires a BF16-capable GPU; use CPU tests for validation')
-    processor = AutoProcessor.from_pretrained(c['model'], revision=c['model_revision'], trust_remote_code=True)
-    processor.chat_template = (ROOT / 'chat_template.jinja').read_text()
-    model = AutoModelForImageTextToText.from_pretrained(
-        c['model'], revision=c['model_revision'], trust_remote_code=True,
-        dtype=torch.bfloat16, attn_implementation='sdpa')
-    action_token_audit = None
-    if args.action_special_tokens:
-        from action_tokens import initialize_action_tokens
-        action_token_audit = initialize_action_tokens(processor, model)
+    # Restore and validate provenance BEFORE loading resized checkpoint weights.
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    from checkpoint_io import CheckpointUploads, restore
+    from resume import (validate_resume,
+                        resume_settings, validate_data_order)
+    if args.resume:
+        args.resume = restore(args.resume, output, HfApi())
+        validate_resume(args.resume, c)
+    processor, model, action_token_audit = load_training_components(
+        c, args.resume, args.action_special_tokens, AutoProcessor,
+        AutoModelForImageTextToText, torch.bfloat16)
     model.config.use_cache = False
     for parameter in model.parameters():
         parameter.requires_grad_(True)
@@ -246,18 +271,13 @@ def main():
     # Decode only the tier actually consumed, not both full and thumbnail images.
     data = data.cast_column('image', DatasetImage(decode=False))
     data = data.cast_column('thumbnail', DatasetImage(decode=False))
-    output = Path(args.output)
-    output.mkdir(parents=True, exist_ok=True)
     run = output.name
     policy = output / 'training-policy.json'
     if policy.exists() and json.loads(policy.read_text()) != c:
         raise ValueError('Resume policy differs from original run')
     policy.write_text(json.dumps(c, indent=2))
 
-    from checkpoint_io import CheckpointUploads, restore
     uploads = CheckpointUploads(output, f"{c['bucket']}/{run}", HfApi(), keep_remote=args.keep_remote)
-    if args.resume:
-        args.resume = restore(args.resume, output, HfApi())
 
     class BucketCheckpoint(TrainerCallback):
         def on_save(self, training_args, state, control, **kwargs):
@@ -266,6 +286,7 @@ def main():
             if action_token_audit is not None:
                 from action_tokens import save_action_tokens
                 save_action_tokens(checkpoint, action_token_audit)
+            (checkpoint / 'resume-settings.json').write_text(json.dumps(settings, indent=2))
             shutil.copy(policy, checkpoint / policy.name)
             write_license(checkpoint, c)
             uploads.submit(checkpoint)
@@ -278,6 +299,9 @@ def main():
 
     training = select_targets(HistoryDataset(data['train'], c, index, 'train',
         bootstrap_prob=args.bootstrap_prob, bootstrap_seed=args.subset_seed), args.subset, args.subset_seed)
+    settings = resume_settings(c, len(training), args.max_steps, int(os.environ.get('WORLD_SIZE', '1')))
+    if args.resume:
+        validate_data_order(args.resume, settings)
     effective_batch = c['gradient_accumulation_steps'] * int(os.environ.get('WORLD_SIZE', '1'))
     steps_per_epoch = math.ceil(math.ceil(len(training) / int(os.environ.get('WORLD_SIZE', '1'))) /
                                 c['gradient_accumulation_steps'])
@@ -311,11 +335,7 @@ def main():
             dataloader_persistent_workers=args.workers > 0,
             dataloader_prefetch_factor=2 if args.workers > 0 else None,
             dataloader_multiprocessing_context='spawn' if args.workers > 0 else None,
-            dataloader_pin_memory=True, seed=42, data_seed=42, report_to='none'))
-    if args.resume:
-        saved = Path(args.resume) / 'training-policy.json'
-        if not saved.exists() or json.loads(saved.read_text()) != c:
-            raise ValueError('Checkpoint provenance does not match training config')
+            dataloader_pin_memory=True, seed=42, data_seed=42, ignore_data_skip=False, report_to='none'))
     try:
         trainer.train(resume_from_checkpoint=args.resume)
     finally:
