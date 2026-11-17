@@ -201,7 +201,7 @@ def main():
                         help='Fraction of synthetic idle-start training targets; 0 disables')
     parser.add_argument('--resume')
     parser.add_argument('--action-special-tokens', action='store_true',
-                        help='NEXT FRESH run only: add eight action tokens with old-subword mean init')
+                        help='NEXT FRESH run only: add fifteen action tokens with old-subword mean init')
     parser.add_argument('--keep-remote', type=int, default=2)
     parser.add_argument('--workers', type=int, default=min(4, os.cpu_count() or 1))
     args = parser.parse_args()
