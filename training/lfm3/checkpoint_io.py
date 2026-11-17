@@ -1,6 +1,7 @@
 """Serialized asynchronous checkpoint archives with verified read-back."""
 import hashlib
 import os
+import re
 from pathlib import Path
 import shutil
 import tarfile
@@ -35,6 +36,19 @@ def restore(source, output, api):
         if not candidates:
             raise ValueError('No complete local checkpoint; provide a bucket .tar URI with --resume')
         return str(max(candidates, key=lambda p: int(p.name.split('-')[-1])))
+    if source.startswith('hf://') and source.endswith('/latest'):
+        # Restrict discovery to this exact run and our published tar layout.
+        bucket, prefix = bucket_parts(source)
+        prefix = prefix.removesuffix('latest')
+        pattern = re.compile(re.escape(prefix) + r'checkpoint-(\d+)/checkpoint-\1\.tar$')
+        candidates = []
+        for entry in api.list_bucket_tree(bucket, prefix=prefix, recursive=True):
+            match = pattern.fullmatch(entry.path)
+            if match:
+                candidates.append((int(match[1]), entry.path))
+        if not candidates:
+            raise ValueError('No remote checkpoint archives for this run; refusing a fresh restart')
+        source = f'hf://buckets/{bucket}/{max(candidates)[1]}'
     if not source.endswith('.tar'):
         return source
     output.mkdir(parents=True, exist_ok=True)
@@ -70,7 +84,6 @@ def restore(source, output, api):
 
 def prune_remote(api, run_uri, keep=2, through_step=None):
     """Only exact checkpoint-N/checkpoint-N.tar files within this run."""
-    import re
     if keep < 1:
         raise ValueError('--keep-remote must be at least 1')
     bucket, prefix = bucket_parts(run_uri.rstrip('/') + '/placeholder')

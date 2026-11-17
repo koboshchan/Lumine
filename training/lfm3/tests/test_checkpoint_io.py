@@ -30,4 +30,9 @@ def test_upload_retention_and_restore():
   restored=restore('hf://buckets/user/bucket/run/checkpoint-100/checkpoint-100.tar',root/'restored',api)
   assert pathlib.Path(restored).is_dir()
   assert restore('latest',out,api)==str(b)
+  remote_latest=restore('hf://buckets/user/bucket/run/latest',root/'remote-latest',api)
+  assert pathlib.Path(remote_latest).name=='checkpoint-200'
+  import pytest
+  with pytest.raises(ValueError,match='No remote checkpoint'):
+   restore('hf://buckets/user/bucket/missing/latest',root/'none',api)
   print('PASS serialized upload, remote size+SHA256 readback, retention, bucket tar restore, latest resume')

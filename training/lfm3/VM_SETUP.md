@@ -177,7 +177,69 @@ tail -f "$RUN_DIR/train.log"
 # To attach: tmux -L "$RUN" attach -t train
 ```
 
-This fresh action-token path currently **rejects --resume**, including newly
-tokenized checkpoints. Checkpoint retention does not imply that this CLI already
-supports resuming the action15 run. Do not remove the guard or load an old
-tokenizer to bypass it.
+## Spot preemption and full-state resume
+
+Action15 checkpoints can now resume with `--action-special-tokens`. The saved
+tokenizer must contain the exact same fifteen action tokens, IDs and vocabulary
+size (125046), and its audit must agree. Eight-token/legacy or otherwise changed
+tokenizers fail before model loading. Resuming loads the saved resized embeddings
+directly, without adding tokens, resizing, or mean-initializing them again.
+Trainer restores optimizer, scheduler, RNG, global step and skips consumed batches
+in the same shuffled epoch. Keep the same source commit, dependencies, config,
+GPU count, subset/seed, bootstrap probability, accumulation and max-step/epoch
+schedule. New checkpoints also record data-order settings and reject changes.
+Older action15 checkpoints without this extra settings file support single-GPU
+resume if their existing policy, RNG and scheduler provenance match.
+
+Record the exact `RUN` string somewhere persistent before starting. After a spot
+VM restart/replacement, remount a surviving disk, or recreate the environment and
+re-download the pinned dataset if the local SSD was lost. Do not reformat a
+surviving disk or repeat the fresh-run command that generates a new run name.
+Restore `WORK`, `HF_HOME`, `TMPDIR`, `HF_TOKEN`, `RUN` and `RUN_DIR` as above.
+The output basename must remain the original run name so uploads stay in its
+existing private bucket prefix.
+
+Run this once, manually or from your own VM startup procedure. It discovers the
+highest numbered archive in this exact run prefix and fails if none exists;
+it never silently starts a fresh run. This is not a VM provisioner or retry loop.
+
+```bash
+export WORK=/mnt/disks/lumine
+export HF_HOME="$WORK/hf" TMPDIR="$WORK/tmp"
+export RUN='lfm3-full-action15-PASTE-ORIGINAL-RUN-NAME'
+export RUN_DIR="$WORK/runs/$RUN"
+mkdir -p "$RUN_DIR" "$HF_HOME" "$TMPDIR"
+cd "$WORK/Lumine"
+source "$WORK/venv/bin/activate"
+export OMP_NUM_THREADS=8
+# HF_TOKEN must be exported again after a reboot.
+# If the exact checkpoint directory is already present locally, use
+# --resume latest instead of extracting the same remote tar over it.
+python -u training/lfm3/train.py \
+  --dataset-dir "$WORK/data" \
+  --output "$RUN_DIR" \
+  --workers 4 \
+  --action-special-tokens \
+  --bootstrap-prob 0.1 \
+  --keep-remote 2 \
+  --resume "hf://buckets/koboshchan/checkpoints/$RUN/latest"
+```
+
+For an explicitly selected checkpoint, replace the last argument with
+`hf://buckets/koboshchan/checkpoints/$RUN/checkpoint-1200/checkpoint-1200.tar`,
+a local `/path/to/checkpoint-1200.tar`, or a checkpoint directory.
+`--resume latest` means the highest complete **local** checkpoint in
+`RUN_DIR`; `hf://…/$RUN/latest` discovers the latest **remote** archive.
+An existing destination directory is never overwritten by tar extraction;
+use its directory path or local `latest` on a surviving disk.
+If the original run used `--subset`, `--subset-seed` or `--max-steps`,
+repeat those exact options. Do not set max steps to the number of steps remaining.
+A completed checkpoint should not be restarted as a new run.
+
+Resume only checkpoints you own and trust. Processor/model custom Python and
+Trainer RNG/optimizer state are executable or serialized training artifacts,
+not a safe format for untrusted uploads. Tar restoration rejects traversal,
+links and non-checkpoint roots. Only fully uploaded archives are discoverable,
+but interrupted/corrupt downloads still fail rather than falling back to a
+different checkpoint. Up to one save interval plus upload lag can be lost on
+preemption; a checkpoint sitting only on ephemeral storage is not durable.
