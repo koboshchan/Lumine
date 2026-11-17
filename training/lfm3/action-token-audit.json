@@ -1,0 +1,326 @@
+{
+  "model": "LiquidAI/LFM3-VL-2B",
+  "model_revision": "23387beda43c60310348e83e25f78f33c3140d3a",
+  "dataset": "koboshchan/genshinPlayData2",
+  "dataset_revision": "daff7e95b133fcb1c5f9f8504c7be4c2e952e902",
+  "vocab_before": 125031,
+  "vocab_after": 125046,
+  "action_special_tokens": 15,
+  "tokens": {
+    "<|action_start|>": {
+      "id": 125031,
+      "previous_ids": [
+        36,
+        100,
+        2908,
+        35670,
+        117671
+      ],
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "<|action_end|>": {
+      "id": 125032,
+      "previous_ids": [
+        36,
+        100,
+        2908,
+        36008,
+        117671
+      ],
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "<use_absolute>": {
+      "id": 125033,
+      "previous_ids": [
+        36,
+        1969,
+        117367,
+        30582,
+        38
+      ],
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "<|thought_start|>": {
+      "id": 125034,
+      "previous_ids": [
+        36,
+        100,
+        116368,
+        35670,
+        117671
+      ],
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "<|thought_end|>": {
+      "id": 125035,
+      "previous_ids": [
+        36,
+        100,
+        116368,
+        36008,
+        117671
+      ],
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "Eleven": {
+      "id": 125036,
+      "previous_ids": [
+        44471,
+        1330
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "Twelve": {
+      "id": 125037,
+      "previous_ids": [
+        23942,
+        15009
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "LB": {
+      "id": 125038,
+      "previous_ids": [
+        52,
+        42
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "Caps": {
+      "id": 125039,
+      "previous_ids": [
+        43,
+        2727
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "six": {
+      "id": 125040,
+      "previous_ids": [
+        91,
+        1078
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "seven": {
+      "id": 125041,
+      "previous_ids": [
+        411,
+        1330
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "nine": {
+      "id": 125042,
+      "previous_ids": [
+        86,
+        475
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "Seven": {
+      "id": 125043,
+      "previous_ids": [
+        2245,
+        1330
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "Eight": {
+      "id": 125044,
+      "previous_ids": [
+        45,
+        516
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    "Nine": {
+      "id": 125045,
+      "previous_ids": [
+        54,
+        475
+      ],
+      "single_word": true,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  },
+  "shards": {
+    "data/train-00000-of-00067.parquet": 801,
+    "data/train-00001-of-00067.parquet": 886,
+    "data/train-00002-of-00067.parquet": 974,
+    "data/train-00003-of-00067.parquet": 943,
+    "data/train-00004-of-00067.parquet": 653,
+    "data/train-00005-of-00067.parquet": 725,
+    "data/train-00006-of-00067.parquet": 962,
+    "data/train-00007-of-00067.parquet": 681,
+    "data/train-00008-of-00067.parquet": 857,
+    "data/train-00009-of-00067.parquet": 696,
+    "data/train-00010-of-00067.parquet": 639,
+    "data/train-00011-of-00067.parquet": 686,
+    "data/train-00012-of-00067.parquet": 657,
+    "data/train-00013-of-00067.parquet": 634,
+    "data/train-00014-of-00067.parquet": 714,
+    "data/train-00015-of-00067.parquet": 842,
+    "data/train-00016-of-00067.parquet": 823,
+    "data/train-00017-of-00067.parquet": 1161,
+    "data/train-00018-of-00067.parquet": 775,
+    "data/train-00019-of-00067.parquet": 767,
+    "data/train-00020-of-00067.parquet": 678,
+    "data/train-00021-of-00067.parquet": 680,
+    "data/train-00022-of-00067.parquet": 699,
+    "data/train-00023-of-00067.parquet": 772,
+    "data/train-00024-of-00067.parquet": 809,
+    "data/train-00025-of-00067.parquet": 815,
+    "data/train-00026-of-00067.parquet": 763,
+    "data/train-00027-of-00067.parquet": 869,
+    "data/train-00028-of-00067.parquet": 797,
+    "data/train-00029-of-00067.parquet": 1016,
+    "data/train-00030-of-00067.parquet": 1182,
+    "data/train-00031-of-00067.parquet": 938,
+    "data/train-00032-of-00067.parquet": 1014,
+    "data/train-00033-of-00067.parquet": 776,
+    "data/train-00034-of-00067.parquet": 678,
+    "data/train-00035-of-00067.parquet": 756,
+    "data/train-00036-of-00067.parquet": 849,
+    "data/train-00037-of-00067.parquet": 1063,
+    "data/train-00038-of-00067.parquet": 847,
+    "data/train-00039-of-00067.parquet": 840,
+    "data/train-00040-of-00067.parquet": 853,
+    "data/train-00041-of-00067.parquet": 741,
+    "data/train-00042-of-00067.parquet": 646,
+    "data/train-00043-of-00067.parquet": 660,
+    "data/train-00044-of-00067.parquet": 873,
+    "data/train-00045-of-00067.parquet": 823,
+    "data/train-00046-of-00067.parquet": 641,
+    "data/train-00047-of-00067.parquet": 785,
+    "data/train-00048-of-00067.parquet": 755,
+    "data/train-00049-of-00067.parquet": 731,
+    "data/train-00050-of-00067.parquet": 878,
+    "data/train-00051-of-00067.parquet": 779,
+    "data/train-00052-of-00067.parquet": 838,
+    "data/train-00053-of-00067.parquet": 938,
+    "data/train-00054-of-00067.parquet": 880,
+    "data/train-00055-of-00067.parquet": 896,
+    "data/train-00056-of-00067.parquet": 885,
+    "data/train-00057-of-00067.parquet": 866,
+    "data/train-00058-of-00067.parquet": 979,
+    "data/train-00059-of-00067.parquet": 1047,
+    "data/train-00060-of-00067.parquet": 1072,
+    "data/train-00061-of-00067.parquet": 987,
+    "data/train-00062-of-00067.parquet": 669,
+    "data/train-00063-of-00067.parquet": 821,
+    "data/train-00064-of-00067.parquet": 879,
+    "data/train-00065-of-00067.parquet": 877,
+    "data/train-00066-of-00067.parquet": 985,
+    "data/train-oct30-00000-of-00017.parquet": 803,
+    "data/train-oct30-00001-of-00017.parquet": 851,
+    "data/train-oct30-00002-of-00017.parquet": 818,
+    "data/train-oct30-00003-of-00017.parquet": 991,
+    "data/train-oct30-00004-of-00017.parquet": 723,
+    "data/train-oct30-00005-of-00017.parquet": 742,
+    "data/train-oct30-00006-of-00017.parquet": 751,
+    "data/train-oct30-00007-of-00017.parquet": 905,
+    "data/train-oct30-00008-of-00017.parquet": 950,
+    "data/train-oct30-00009-of-00017.parquet": 850,
+    "data/train-oct30-00010-of-00017.parquet": 640,
+    "data/train-oct30-00011-of-00017.parquet": 575,
+    "data/train-oct30-00012-of-00017.parquet": 696,
+    "data/train-oct30-00013-of-00017.parquet": 723,
+    "data/train-oct30-00014-of-00017.parquet": 1402,
+    "data/train-oct30-00015-of-00017.parquet": 730,
+    "data/train-oct30-00016-of-00017.parquet": 829,
+    "data/validation-00000-of-00008.parquet": 701,
+    "data/validation-00001-of-00008.parquet": 643,
+    "data/validation-00002-of-00008.parquet": 631,
+    "data/validation-00003-of-00008.parquet": 819,
+    "data/validation-00004-of-00008.parquet": 798,
+    "data/validation-00005-of-00008.parquet": 726,
+    "data/validation-00006-of-00008.parquet": 909,
+    "data/validation-00007-of-00008.parquet": 952,
+    "data/validation-oct30-00000-of-00002.parquet": 791,
+    "data/validation-oct30-00001-of-00002.parquet": 778
+  },
+  "rows": 77228,
+  "unique_actions": 36260,
+  "ordered_action_column_sha256": "e636680f5634eda77abb4f2e414443def03ebb83a2a6512b6d302ddef48e23aa",
+  "lexical_occurrences": {
+    "Eleven": 0,
+    "Twelve": 0,
+    "LB": 39403,
+    "Caps": 83,
+    "six": 0,
+    "seven": 3,
+    "nine": 0,
+    "Seven": 0,
+    "Eight": 0,
+    "Nine": 0
+  },
+  "system_and_embedded_probes_unchanged": true,
+  "full_prompt_roles": [
+    "previous user action",
+    "current assistant action"
+  ],
+  "action_tokens_total": 1656633,
+  "full_prompt_tokens_total": 11422206,
+  "skip_special_tokens": false,
+  "changed_decoded_text": []
+}
