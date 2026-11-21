@@ -91,6 +91,17 @@ def load_checkpoint_processor(checkpoint):
     expected_policy = json.loads((ROOT / 'config.json').read_text())
     if config.get('action_special_tokens') is True:
         expected_policy['action_special_tokens'] = True
+    # Training-only augmentation provenance does not change inference rendering.
+    # Validate it explicitly instead of rejecting checkpoints saved by train.py.
+    if 'bootstrap_prob' in config:
+        prob = config['bootstrap_prob']
+        if type(prob) not in (int, float) or not math.isfinite(prob) or not 0 <= prob <= 1:
+            raise ValueError('Invalid checkpoint bootstrap probability')
+        expected_policy['bootstrap_prob'] = prob
+    if 'bootstrap_seed' in config:
+        if type(config['bootstrap_seed']) is not int:
+            raise ValueError('Invalid checkpoint bootstrap seed')
+        expected_policy['bootstrap_seed'] = config['bootstrap_seed']
     if config != expected_policy:
         raise ValueError('Checkpoint training policy does not match this code')
     processor = AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=True)
