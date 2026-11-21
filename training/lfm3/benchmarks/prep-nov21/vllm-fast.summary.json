@@ -1,0 +1,87 @@
+{
+  "n": 256,
+  "selection_sha256": "10d4f2811c5012cbf8e7acaf545a651d890bc54f4b7fd2b7bead3d77dacc6bb8",
+  "exact_ground_truth": 0.3125,
+  "parse_valid": 256,
+  "preprocess_s": {
+    "p50": 0.17213193399993543,
+    "p95": 1.4751314740001362
+  },
+  "encode_s": {
+    "p50": 0.046883900000011636,
+    "p95": 0.05343146999985038
+  },
+  "prefill_s": {
+    "p50": 0.069619295999928,
+    "p95": 0.07191942899976311
+  },
+  "decode_s": {
+    "p50": 0.07456586400007836,
+    "p95": 0.09397998300005383
+  },
+  "generate_s": {
+    "p50": 0.3501510009998583,
+    "p95": 0.38897668300000987
+  },
+  "total_s": {
+    "p50": 0.547689734999949,
+    "p95": 1.8249894479999966
+  },
+  "effective_recent_range": [
+    4,
+    8
+  ],
+  "encoder_calls": 256,
+  "pixel_parity": [
+    {
+      "i": 0,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    },
+    {
+      "i": 1,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    },
+    {
+      "i": 2,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    },
+    {
+      "i": 3,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    }
+  ],
+  "prep_cpu_stages_s": {
+    "resize": {
+      "p50": 0.016844783000124153,
+      "p95": 0.020909481999979107
+    },
+    "rescale_and_normalize": {
+      "p50": 0.00702078299968889,
+      "p95": 0.009286900999541103
+    },
+    "patchify": {
+      "p50": 0.011770026999784022,
+      "p95": 0.01385600199955661
+    }
+  },
+  "cpu_pixel_cache": {
+    "hits": 767,
+    "misses": 3688,
+    "bytes": 267093288,
+    "processor_s": 12.312418109003602
+  },
+  "decode_cache": {
+    "hits": 950,
+    "misses": 4033,
+    "decode_s": 21.45650268199256
+  },
+  "timing_definition": "TF encode/prefill/decode are CUDA-event forward time; generation/total wall time. vLLM encode synchronized native encoder wall, prefill scheduler-to-first-token minus encode; decode first-to-last-token wall. Cross-engine component timings are not kernel-equivalent.",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "peak_vram_gib": null,
+  "baseline_backend": "vllm-reference",
+  "agreement_baseline": 1.0
+}

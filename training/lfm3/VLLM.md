@@ -1,9 +1,10 @@
 # Experimental native vLLM serving
 
-Status on November 20, 2026: GPU-tested on one A100 80GB; graphs/no-processor-cache works.
-Processor-cache path FAILED and is disabled.
+Status on November 21, 2026: exact CPU preprocessing optimization passed the
+256-sample A100 gate below. Native vLLM processor caching FAILED and stays off.
 The existing Transformers server and all training defaults remain unchanged.
-Do not treat this path as faster or output-compatible until the GPU gate passes.
+The pinned vLLM reference and optimized path produced identical outputs in the
+November 21 gate; this is not an arbitrary-model or runtime parity guarantee.
 
 Use a separate environment with `pip install -r training/lfm3/requirements-vllm.txt`.
 vLLM 0.34.0 requires Torch 2.14.0, torchvision 0.29.0, Pillow >=13 and
@@ -22,7 +23,7 @@ runner transport. It accepts the existing 640x360 pre-resized lossless PNG route
 that skips the ingress downsize. Keep the client's training-parity LANCZOS resize.
 GPU interpolation is not substituted for LANCZOS.
 
-The backend requests native single-GPU BF16, CUDA graphs, prefix caching, greedy
+The backend requests native single-GPU BF16, CUDA graphs, prefix caching disabled, greedy
 sampling, a 96-token maximum, and an included `<|action_end|>` stop delimiter.
 The public engine handles bounded multimodal processor and GPU encoder caches,
 using server-computed RGB content/resolution hashes. Processor caching is currently disabled after the failure below. Processor caching is not
@@ -111,3 +112,78 @@ The benchmark cache ablation intentionally fails closed with that safety guard.
 90.99 CU (6.29 CU used), original pre-task balance 91.11 CU. Several setup and
 instrumentation failures preceded the measured run; none are claimed as results.
 No FP8 or GPU LANCZOS substitution was enabled. Further GPU work needs approval.
+
+## November 21 exact preprocessing optimization
+
+Exact fast preprocessing is now the default; use `--no-fast-prep` for the old
+path. The HTTP API, training, prompt chronology, greedy sampling, BF16 and
+PIL LANCZOS ingress resize are unchanged. Prefix caching and native multimodal
+processor caching remain off. No GPU interpolation, quantization, native P0/P1
+cache, or GPU embedding cache was introduced.
+
+On the same A100 80GB and fixed 256 held-out targets, a fresh back-to-back
+reference/optimized comparison produced identical expanded prompt IDs and
+identical completions on all 256. Both scored 80/256 exact ground-truth matches
+(31.25%), parsed 256/256, with effective recent history 4 through 8. This is
+100% agreement with the current vLLM reference, not with Transformers.
+
+Times below are p50 / p95 seconds, excluding the cold first request. This is
+in-process inference, not capture-to-action or HTTP network latency.
+
+Reference history preparation was 0.800 / 2.585; optimized 0.172 / 1.475.
+Reference generation was 0.335 / 0.364; optimized 0.350 / 0.389.
+Reference total was 1.135 / 2.948; optimized 0.548 / 1.825.
+Total median improved 51.7% (2.07x) and p95 improved 38.1%. Generation is not
+faster; the win is avoiding redundant preparation. Component medians do not add.
+Encoder was 0.0467 / 0.0537 versus 0.0469 / 0.0534; prefill 0.0697 / 0.0814
+versus 0.0696 / 0.0719; decode 0.0773 / 0.0982 versus 0.0746 / 0.0940.
+
+CPU profiling found image decoding/hashing and full HF processing repeated for
+baseline/full/trim history-budget probes. The fast path uses the official pinned
+processor's shape-to-patch-count rule for token budgeting, a 128-frame decoded
+PNG LRU, and a separate 256 MiB CPU pixel-tensor LRU. The latter stores the exact
+stock HF resize/normalize/patchify result, keyed by processor instance, RGB
+content, dimensions and processing kwargs. Its outputs are fresh concatenations,
+so a caller cannot mutate cached entries. Engine access is serialized. History
+trimming order remains middle, recent, notes. New processor versions/checkpoints
+must re-run the full expanded-token parity gate before using this path.
+
+Measured native CPU resize stage p50 / p95 fell 0.0800 / 0.1175 to
+0.0168 / 0.0209 seconds; rescale/normalize 0.0321 / 0.0486 to
+0.0070 / 0.0093; patchify 0.0516 / 0.0765 to 0.0118 / 0.0139.
+Decode-cache hits/misses were 950/4033, pixel-cache hits/misses 767/3688,
+with 254.7 MiB retained. These randomly selected trajectories do not imply one
+lifetime preprocessing call per frame, and misses are expected after eviction.
+There were still 256 native encoder calls: this does not cache GPU embeddings.
+
+The CPU-only 256-prompt parity pass measured budget p50 / p95 of
+0.492 / 1.591 versus 0.095 / 0.782 seconds. Normalized pixels from the exact
+cache versus stock mixed-size batching had max/mean absolute difference zero;
+the GPU benchmark's first four full prompt pixel audits also had zero delta.
+All 256 expanded prompt IDs and generated outputs were compared on GPU, but
+all-256 normalized-pixel tensors were not archived or separately audited.
+
+A representative local 1280x720 PNG measured p50 decode 11.69 ms, base64 decode
+0.45 ms, crop 0.12 ms, PIL LANCZOS 640x360 resize 12.00 ms and 320x180 resize
+9.13 ms. These are CPU microbenchmarks, not A100 timings; PNG compression/content
+and CPU speed matter. JPEG is rejected by the current HTTP API. Client-side
+640x360 lossless PNG already skips ingress downsize, so no protocol change was
+needed. HTTP/base64 is outside the offline dataset benchmark. Actual network
+transfer and isolated CPU/GPU copy time were not measured; generation wall time
+includes any transfers. No pinned-memory benefit or GPU-resize equivalence is
+claimed. Exact cached stock transforms were preferred over approximate GPU
+interpolation, since repeated history work was the larger measured opportunity.
+
+Reproduce with `profile_preprocessing.py --root /path/to/eval --output cpu.json`,
+then run `benchmark_vllm.py` with `--backend vllm-reference` and
+`--backend vllm-fast`, writing both JSONL outputs to the same directory. The
+reference uses `transformers.jsonl` from the earlier gate as its comparison;
+the fast run instead compares against `vllm-reference.jsonl` and asserts every
+expanded prompt ID. Committed summaries are in `benchmarks/prep-nov21/`.
+The backend-local cache patch depends on pinned vLLM 0.34.0's processor interface.
+
+38 CPU tests and compilation passed. The single A100 session was released after
+about 22 minutes, with independently verified zero active sessions/assignments
+and 0.00 units/hour. Balance was 80.40 units afterwards; the balance delta also
+includes an unrelated session already active before this one, so it is not an
+isolated cost measurement. No serving/controller process or watcher was left.

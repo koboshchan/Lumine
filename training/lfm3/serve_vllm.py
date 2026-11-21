@@ -108,7 +108,7 @@ class PromptBuilder:
 
 class VLLMBackend:
     def __init__(self, checkpoint, *, eager=False, prefix_cache=False,
-                 mm_cache_gb=0, timing=False, fast_prep=False):
+                 mm_cache_gb=0, timing=False, fast_prep=True):
         if Version(version('vllm')) < Version('0.34.0'):
             raise RuntimeError('Native LFM3-VL requires vllm>=0.34.0')
         if mm_cache_gb:
@@ -184,12 +184,14 @@ def main():
     parser.add_argument('--model-name', default='lumine-mini-2b')
     parser.add_argument('--eager', action='store_true', help='Diagnostic ablation, disable CUDA graphs')
     parser.add_argument('--no-prefix-cache', action='store_true')
+    parser.add_argument('--no-fast-prep', action='store_true', help='Reference preprocessing ablation')
     parser.add_argument('--prefix-cache', action='store_true', help='Experimental, not separately GPU-validated')
     args = parser.parse_args()
     key = os.environ.get('LUMINE_SERVE_KEY', '')
     if not key:
         parser.error('Set LUMINE_SERVE_KEY in the environment')
-    backend = VLLMBackend(args.checkpoint, eager=args.eager, prefix_cache=args.prefix_cache and not args.no_prefix_cache)
+    backend = VLLMBackend(args.checkpoint, eager=args.eager, prefix_cache=args.prefix_cache and not args.no_prefix_cache,
+                          fast_prep=not args.no_fast_prep)
     uvicorn.run(create_app(backend, key, args.model_name), host=args.host, port=args.port, access_log=False)
 
 

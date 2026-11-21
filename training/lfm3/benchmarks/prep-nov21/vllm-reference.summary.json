@@ -1,0 +1,77 @@
+{
+  "n": 256,
+  "selection_sha256": "10d4f2811c5012cbf8e7acaf545a651d890bc54f4b7fd2b7bead3d77dacc6bb8",
+  "exact_ground_truth": 0.3125,
+  "agreement_transformers": 0.96484375,
+  "parse_valid": 256,
+  "preprocess_s": {
+    "p50": 0.8002236109999785,
+    "p95": 2.5854587669999773
+  },
+  "encode_s": {
+    "p50": 0.046728736999966713,
+    "p95": 0.053699886999993396
+  },
+  "prefill_s": {
+    "p50": 0.06967771200004336,
+    "p95": 0.08138208699995175
+  },
+  "decode_s": {
+    "p50": 0.07732095699998354,
+    "p95": 0.09821478000003481
+  },
+  "generate_s": {
+    "p50": 0.3354031249999707,
+    "p95": 0.3639673999999786
+  },
+  "total_s": {
+    "p50": 1.1347376850000046,
+    "p95": 2.948434691999978
+  },
+  "effective_recent_range": [
+    4,
+    8
+  ],
+  "encoder_calls": 256,
+  "pixel_parity": [
+    {
+      "i": 0,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    },
+    {
+      "i": 1,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    },
+    {
+      "i": 2,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    },
+    {
+      "i": 3,
+      "max_abs_normalized": 0.0,
+      "mean_abs_normalized": 0.0
+    }
+  ],
+  "prep_cpu_stages_s": {
+    "resize": {
+      "p50": 0.07995733800044036,
+      "p95": 0.11750691900022048
+    },
+    "rescale_and_normalize": {
+      "p50": 0.03206287199986946,
+      "p95": 0.04864855899984377
+    },
+    "patchify": {
+      "p50": 0.05162648700002137,
+      "p95": 0.07654254300030061
+    }
+  },
+  "timing_definition": "TF encode/prefill/decode are CUDA-event forward time; generation/total wall time. vLLM encode synchronized native encoder wall, prefill scheduler-to-first-token minus encode; decode first-to-last-token wall. Cross-engine component timings are not kernel-equivalent.",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "peak_vram_gib": null,
+  "baseline_backend": "transformers",
+  "agreement_baseline": 0.96484375
+}

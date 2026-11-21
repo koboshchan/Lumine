@@ -131,3 +131,21 @@ def test_exact_pixel_cache_mixed_sizes_kwargs_and_bound():
     small.install(other)
     other(images[:1], return_tensors='pt')
     assert small.bytes == 0 and not small.items
+
+
+def test_pixel_cache_isolates_processor_configuration():
+    import torch
+    from frame_cache import PixelFrames
+    from transformers.models.qwen2_vl import Qwen2VLImageProcessor
+    first = Qwen2VLImageProcessor(image_mean=[0, 0, 0])
+    second = Qwen2VLImageProcessor(image_mean=[1, 1, 1])
+    image = Image.new('RGB', (640, 360), 'red')
+    expected = second(image, return_tensors='pt')['pixel_values']
+    cache = PixelFrames()
+    cache.install(first)
+    cache.install(second)
+    one = first(image, return_tensors='pt')['pixel_values']
+    two = second(image, return_tensors='pt')['pixel_values']
+    assert not torch.equal(one, two)
+    assert torch.equal(two, expected)
+    assert cache.misses == 2

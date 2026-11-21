@@ -188,6 +188,10 @@ def main():
             records.append(record); file.write(json.dumps(record)+'\n'); file.flush()
             if i % 16 == 0: print(args.backend, i+1, timing, flush=True)
     result = summarize(records)
+    result['baseline_backend'] = 'vllm-reference' if args.backend == 'vllm-fast' else 'transformers'
+    result['agreement_baseline'] = result['agreement_transformers']
+    if args.backend == 'vllm-fast':
+        del result['agreement_transformers']
     result['pixel_parity'] = pixel_report
     result['prep_cpu_stages_s'] = {name: {'p50': statistics.median([r['prep_cpu_stages_s'].get(name, 0) for r in records[1:]]), 'p95': percentile([r['prep_cpu_stages_s'].get(name, 0) for r in records[1:]], .95)} for name in ('resize', 'rescale_and_normalize', 'patchify')}
     if args.backend == 'vllm-fast':
