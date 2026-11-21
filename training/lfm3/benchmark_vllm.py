@@ -87,8 +87,8 @@ def main():
         next(item for item in reversed(events) if item[0] == module._bench_name and item[2] is None)[2] = end
     if args.backend == 'transformers':
         # Forward events are GPU elapsed, excluding Python/scheduler gaps.
-        for name, module in [('model', backend.model), ('vision', backend.model.vision_tower),
-                             ('projector', backend.model.multi_modal_projector)]:
+        for name, module in [('model', backend.model), ('vision', backend.model.model.vision_tower),
+                             ('projector', backend.model.model.multi_modal_projector)]:
             module._bench_name = name
             handles.extend([module.register_forward_pre_hook(hook_before), module.register_forward_hook(hook_after)])
     records = []
