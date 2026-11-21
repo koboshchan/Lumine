@@ -80,3 +80,54 @@ def test_checkpoint_accepts_valid_provenance_before_processor(tmp_path, monkeypa
     monkeypatch.setattr(transformers.AutoProcessor, 'from_pretrained', reached)
     with pytest.raises(ProcessorReached):
         load_checkpoint_processor(tmp_path)
+
+
+def test_fast_budget_matches_stock_and_decode_reused():
+    import io
+    from serve import load_checkpoint_processor
+    from transformers import AutoProcessor
+    config = json.loads((ROOT / 'config.json').read_text())
+    config['history_tokens'] = 600
+    p = AutoProcessor.from_pretrained(config['model'], revision=config['model_revision'], trust_remote_code=True)
+    p.chat_template = (ROOT / 'chat_template.jinja').read_text()
+    def row(ts):
+        out = io.BytesIO()
+        Image.new('RGB', (640, 360), (5, 20, ts)).save(out, 'PNG')
+        return dict(image={'bytes': out.getvalue()}, action='0', timestamp_s=ts)
+    sample = dict(current=row(10), recent=[row(i) for i in range(8)], middle=[], notes=[])
+    fast = PromptBuilder(p, config, lambda raw: None, fast=True)
+    raw, rendered, effective = fast.prepare(sample)
+    stock = encode_prompt(p, config, sample)
+    assert rendered['prompt_token_ids'] == stock['input_ids'][0].tolist()
+    misses = fast.decoded.misses
+    assert fast.prepare(sample)[1] == rendered
+    assert fast.decoded.misses == misses == 9
+    assert len(sample['recent']) == 8
+
+
+def test_exact_pixel_cache_mixed_sizes_kwargs_and_bound():
+    import torch
+    from transformers.models.qwen2_vl import Qwen2VLImageProcessor
+    from frame_cache import PixelFrames
+    p = Qwen2VLImageProcessor(size={'shortest_edge': 65536, 'longest_edge': 230400}, patch_size=16)
+    images = [Image.new('RGB', size, color) for size, color in
+              [((640, 360), 'red'), ((320, 180), 'green'), ((640, 360), 'blue')]]
+    expected = p(images, return_tensors='pt')
+    cache = PixelFrames()
+    cache.install(p)
+    actual = p(images, return_tensors='pt')
+    for name in expected:
+        assert torch.equal(expected[name], actual[name])
+    assert cache.misses == 3
+    p([im.copy() for im in images], return_tensors='pt')
+    assert cache.hits == 3
+    actual['pixel_values'].zero_()
+    assert torch.equal(p(images, return_tensors='pt')['pixel_values'], expected['pixel_values'])
+    p(images, return_tensors='pt', do_normalize=False)
+    assert cache.misses == 6
+    assert cache.bytes <= cache.max_bytes
+    small = PixelFrames(max_bytes=1)
+    other = Qwen2VLImageProcessor()
+    small.install(other)
+    other(images[:1], return_tensors='pt')
+    assert small.bytes == 0 and not small.items

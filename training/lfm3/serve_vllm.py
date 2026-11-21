@@ -14,6 +14,7 @@ from importlib.metadata import version
 from packaging.version import Version
 from serve import create_app, load_checkpoint_processor
 from train import ActionCollator
+from frame_cache import DecodedFrames, PixelFrames
 
 
 class FrameHashes:
@@ -51,9 +52,11 @@ class PromptBuilder:
     windows and tier/timestamp changes can invalidate KV prefix hits. Identical
     frames still reuse native multimodal processor/encoder entries until eviction.
     """
-    def __init__(self, processor, config, render):
+    def __init__(self, processor, config, render, *, fast=False):
         self.processor, self.config, self.render = processor, config, render
         self.hashes = FrameHashes()
+        self.fast = fast
+        self.decoded = DecodedFrames()
 
     def raw(self, sample):
         messages = ActionCollator(self.processor, self.config).messages(sample)[:-1]
@@ -65,14 +68,34 @@ class PromptBuilder:
         return {'prompt': text, 'multi_modal_data': {'image': images},
                 'multi_modal_uuids': {'image': [self.hashes.get(im) for im in images]}}
 
+    def token_render(self, raw):
+        # Use the official processor's shape rule; no pixels are processed to
+        # decide which history to retain. Validate expanded IDs against native
+        # rendering before enabling this path on a different processor/version.
+        image_processor = self.processor.image_processor
+        token = self.processor.image_token
+        text = raw['prompt']
+        pieces = text.split(token)
+        images = raw['multi_modal_data']['image']
+        if len(pieces) != len(images) + 1:
+            raise ValueError('Image placeholder count differs from frames')
+        text = pieces[0]
+        for image, piece in zip(images, pieces[1:]):
+            patches = image_processor.get_number_of_image_patches(image.height, image.width)
+            text += token * (patches // image_processor.merge_size**2) + piece
+        return {'prompt_token_ids': self.processor.tokenizer.encode(text, add_special_tokens=False)}
+
     def prepare(self, sample):
+        if self.fast:
+            sample = self.decoded.sample(sample)
+        render = self.token_render if self.fast else self.render
         sample = dict(sample, recent=list(sample['recent']), middle=list(sample['middle']),
                       notes=list(sample.get('notes', [])))
-        baseline = self.render(self.raw(dict(sample, recent=[], middle=[], notes=[])))
+        baseline = render(self.raw(dict(sample, recent=[], middle=[], notes=[])))
         baseline_tokens = len(baseline['prompt_token_ids'])
         while True:
             raw = self.raw(sample)
-            rendered = self.render(raw)
+            rendered = render(raw)
             if len(rendered['prompt_token_ids']) - baseline_tokens <= self.config['history_tokens']:
                 return raw, rendered, sample
             for tier in ('middle', 'recent', 'notes'):
@@ -85,7 +108,7 @@ class PromptBuilder:
 
 class VLLMBackend:
     def __init__(self, checkpoint, *, eager=False, prefix_cache=False,
-                 mm_cache_gb=0, timing=False):
+                 mm_cache_gb=0, timing=False, fast_prep=False):
         if Version(version('vllm')) < Version('0.34.0'):
             raise RuntimeError('Native LFM3-VL requires vllm>=0.34.0')
         if mm_cache_gb:
@@ -107,7 +130,18 @@ class VLLMBackend:
             generation_config='vllm', seed=42,
             enable_mm_processor_stats=timing, disable_log_stats=not timing,
         )
-        self.builder = PromptBuilder(self.processor, self.config, self.render)
+        self.pixel_cache = PixelFrames() if fast_prep else None
+        if fast_prep:
+            # Patch only this engine's cached HF processors, not global classes.
+            # All kwargs variants are covered without changing native P0/P1 state.
+            info = self.engine.renderer.get_mm_processor().info
+            original_get = info.get_hf_processor
+            def get_processor(**kwargs):
+                processor = original_get(**kwargs)
+                self.pixel_cache.install(processor.image_processor)
+                return processor
+            info.get_hf_processor = get_processor
+        self.builder = PromptBuilder(self.processor, self.config, self.render, fast=fast_prep)
         self.last_output = None
 
     def render(self, prompt):
@@ -127,7 +161,8 @@ class VLLMBackend:
             params = SamplingParams(temperature=0, max_tokens=min(max_tokens, 96),
                 stop=['<|action_end|>'], include_stop_str_in_output=True,
                 skip_special_tokens=False, spaces_between_special_tokens=False)
-            # Re-rendering is a processor-cache hit. Use the public generation API
+            # Process pixels once via the public generation API. Native processor
+            # cache stays off; our exact CPU pixel cache is independent of P0/P1.
             # rather than submitting private engine inputs across release boundaries.
             output = self.engine.generate([raw], params, use_tqdm=False,
                 tokenization_kwargs={'add_special_tokens': False})[0]

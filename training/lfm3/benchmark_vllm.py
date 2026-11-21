@@ -13,6 +13,7 @@ import math
 import random
 import statistics
 import time
+from collections import defaultdict
 from pathlib import Path
 
 SELECTION_SHA = '10d4f2811c5012cbf8e7acaf545a651d890bc54f4b7fd2b7bead3d77dacc6bb8'
@@ -40,7 +41,7 @@ def summarize(records):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--backend', choices=['transformers', 'vllm-eager', 'vllm-graphs', 'vllm-cached'], required=True)
+    parser.add_argument('--backend', choices=['transformers', 'vllm-eager', 'vllm-graphs', 'vllm-cached', 'vllm-reference', 'vllm-fast'], required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -70,14 +71,37 @@ def main():
     assert hashlib.sha256(json.dumps(dataset.ids).encode()).hexdigest() == SELECTION_SHA
     prior = [json.loads(line) for line in (args.root / 'prior.jsonl').read_text().splitlines()]
     assert [r['id'] for r in prior] == dataset.ids
-    baseline_path = args.output.parent / 'transformers.jsonl'
+    baseline_path = args.output.parent / ('vllm-reference.jsonl' if args.backend == 'vllm-fast' else 'transformers.jsonl')
     baseline = ([json.loads(line) for line in baseline_path.read_text().splitlines()]
                 if args.backend != 'transformers' else prior)
     assert len(baseline) == 256
     cached = args.backend == 'vllm-cached'
     backend = (Backend(checkpoint) if args.backend == 'transformers' else
                VLLMBackend(checkpoint, eager=args.backend == 'vllm-eager',
-                           prefix_cache=cached, mm_cache_gb=1 if cached else 0, timing=True))
+                           prefix_cache=cached, mm_cache_gb=1 if cached else 0, timing=True,
+                           fast_prep=args.backend == 'vllm-fast'))
+    prep_stages = defaultdict(float)
+    if args.backend != 'transformers':
+        info = backend.engine.renderer.get_mm_processor().info
+        original_get = info.get_hf_processor
+        def timed_get(**kwargs):
+            processor = original_get(**kwargs)
+            image_processor = processor.image_processor
+            if not getattr(image_processor, '_lumine_profiled', False):
+                for name in ('resize', 'rescale_and_normalize', 'patchify'):
+                    if not hasattr(image_processor, name):
+                        continue
+                    original = getattr(image_processor, name)
+                    def timed(*a, _fn=original, _name=name, **kw):
+                        started = time.perf_counter()
+                        try:
+                            return _fn(*a, **kw)
+                        finally:
+                            prep_stages[_name] += time.perf_counter() - started
+                    setattr(image_processor, name, timed)
+                image_processor._lumine_profiled = True
+            return processor
+        info.get_hf_processor = timed_get
     events, handles = [], []
     def hook_before(module, inputs):
         start = torch.cuda.Event(enable_timing=True); start.record()
@@ -135,8 +159,11 @@ def main():
                     diff = (x['pixel_values'] - y['pixel_values']).abs()
                     pixel_report.append({'i': i, 'max_abs_normalized': diff.max().item(), 'mean_abs_normalized': diff.mean().item()})
                     assert diff.max() == 0, 'native pixels differ'
+                prep_stages.clear()
                 torch.cuda.synchronize(); started = time.perf_counter()
                 generated, _, _ = backend.complete(sample, 96)
+                if args.backend == 'vllm-fast':
+                    assert backend.last_output.prompt_token_ids == baseline[i]['prompt_ids'], 'expanded prompt drift'
                 torch.cuda.synchronize(); finished = time.perf_counter()
                 stats = backend.engine.collective_rpc('get_encoder_timing_stats')
                 entries = [entry for worker in stats for entry in worker.values()]
@@ -157,11 +184,15 @@ def main():
                 parse_error = str(exc)
             record = dict(parse_error=parse_error, i=i, id=dataset.ids[i], truth=truth, generated=generated,
                           baseline=baseline[i]['generated'], recent_effective=effective,
-                          prompt_tokens=len(prompt_ids), encoder_calls=calls, **timing)
+                          prep_cpu_stages_s=dict(prep_stages), prompt_tokens=len(prompt_ids), prompt_ids=prompt_ids, encoder_calls=calls, **timing)
             records.append(record); file.write(json.dumps(record)+'\n'); file.flush()
             if i % 16 == 0: print(args.backend, i+1, timing, flush=True)
     result = summarize(records)
     result['pixel_parity'] = pixel_report
+    result['prep_cpu_stages_s'] = {name: {'p50': statistics.median([r['prep_cpu_stages_s'].get(name, 0) for r in records[1:]]), 'p95': percentile([r['prep_cpu_stages_s'].get(name, 0) for r in records[1:]], .95)} for name in ('resize', 'rescale_and_normalize', 'patchify')}
+    if args.backend == 'vllm-fast':
+        result['cpu_pixel_cache'] = dict(hits=backend.pixel_cache.hits, misses=backend.pixel_cache.misses, bytes=backend.pixel_cache.bytes, processor_s=backend.pixel_cache.seconds)
+        result['decode_cache'] = dict(hits=backend.builder.decoded.hits, misses=backend.builder.decoded.misses, decode_s=backend.builder.decoded.seconds)
     result['timing_definition'] = ('TF encode/prefill/decode are CUDA-event forward time; generation/total wall time. '
         'vLLM encode synchronized native encoder wall, prefill scheduler-to-first-token minus encode; '
         'decode first-to-last-token wall. Cross-engine component timings are not kernel-equivalent.')
