@@ -84,10 +84,12 @@ class PromptBuilder:
 
 
 class VLLMBackend:
-    def __init__(self, checkpoint, *, eager=False, prefix_cache=True,
-                 mm_cache_gb=1, timing=False):
+    def __init__(self, checkpoint, *, eager=False, prefix_cache=False,
+                 mm_cache_gb=0, timing=False):
         if Version(version('vllm')) < Version('0.34.0'):
             raise RuntimeError('Native LFM3-VL requires vllm>=0.34.0')
+        if mm_cache_gb:
+            raise ValueError('Processor cache is disabled: native renderer cache drift failed GPU validation')
         from vllm import LLM
         self.processor, self.config = load_checkpoint_processor(checkpoint)
         self.lock = threading.Lock()
@@ -133,6 +135,9 @@ class VLLMBackend:
                                  'generate_s': time.perf_counter() - prepared}
             self.last_output = output
             completion = output.outputs[0]
+            if (completion.finish_reason == 'error' or not completion.text
+                    or '<|action_end|>' not in completion.text):
+                raise RuntimeError('vLLM failed to return a complete action; no action acknowledged')
             return completion.text, len(output.prompt_token_ids), len(completion.token_ids)
 
 
@@ -145,11 +150,12 @@ def main():
     parser.add_argument('--model-name', default='lumine-mini-2b')
     parser.add_argument('--eager', action='store_true', help='Diagnostic ablation, disable CUDA graphs')
     parser.add_argument('--no-prefix-cache', action='store_true')
+    parser.add_argument('--prefix-cache', action='store_true', help='Experimental, not separately GPU-validated')
     args = parser.parse_args()
     key = os.environ.get('LUMINE_SERVE_KEY', '')
     if not key:
         parser.error('Set LUMINE_SERVE_KEY in the environment')
-    backend = VLLMBackend(args.checkpoint, eager=args.eager, prefix_cache=not args.no_prefix_cache)
+    backend = VLLMBackend(args.checkpoint, eager=args.eager, prefix_cache=args.prefix_cache and not args.no_prefix_cache)
     uvicorn.run(create_app(backend, key, args.model_name), host=args.host, port=args.port, access_log=False)
 
 

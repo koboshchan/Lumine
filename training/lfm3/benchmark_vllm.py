@@ -166,7 +166,8 @@ def main():
         'vLLM encode synchronized native encoder wall, prefill scheduler-to-first-token minus encode; '
         'decode first-to-last-token wall. Cross-engine component timings are not kernel-equivalent.')
     result['gpu'] = torch.cuda.get_device_name()
-    result['peak_vram_gib'] = torch.cuda.max_memory_allocated()/1024**3
+    result['peak_vram_gib'] = (torch.cuda.max_memory_allocated()/1024**3
+                               if args.backend == 'transformers' else None)
     args.output.with_suffix('.summary.json').write_text(json.dumps(result, indent=2))
     print(json.dumps(result), flush=True)
 

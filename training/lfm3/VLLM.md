@@ -1,6 +1,7 @@
 # Experimental native vLLM serving
 
-Status on November 20, 2026: implemented, CPU-tested, **not GPU-validated**.
+Status on November 20, 2026: GPU-tested on one A100 80GB; graphs/no-processor-cache works.
+Processor-cache path FAILED and is disabled.
 The existing Transformers server and all training defaults remain unchanged.
 Do not treat this path as faster or output-compatible until the GPU gate passes.
 
@@ -24,7 +25,7 @@ GPU interpolation is not substituted for LANCZOS.
 The backend requests native single-GPU BF16, CUDA graphs, prefix caching, greedy
 sampling, a 96-token maximum, and an included `<|action_end|>` stop delimiter.
 The public engine handles bounded multimodal processor and GPU encoder caches,
-using server-computed RGB content/resolution hashes. Processor caching is not
+using server-computed RGB content/resolution hashes. Processor caching is currently disabled after the failure below. Processor caching is not
 itself evidence of GPU embedding reuse. GPU encoder entries can be evicted;
 "each frame once" is not an unbounded lifetime guarantee. Native encoder-call
 metrics must verify reuse on the target runtime.
@@ -73,11 +74,40 @@ This is preliminary CPU evidence, not a 256-sample GPU parity result.
 Pre-resized frames avoid a new resize, so their resize pixel delta is zero by
 construction; full-resolution LANCZOS GPU parity was not implemented or measured.
 
-One A100 80GB was acquired with CUDA-compatible driver 580.82.07. Installation
-stopped before model loading because the initial optional requirements pinned
-Pillow 12 while vLLM requires >=13. The requirements were corrected and resolved
-on CPU afterward, without allocating another GPU. No autonomous retry was run.
-Thus **no new A100 latency, accuracy, graph, prefix-cache or encoder-reuse numbers
-exist**. The previous L4 eval remains 78/256 exact (30.46875%); it is not an A100
-baseline. Remaining balance after teardown was 90.99 CU versus 91.11 before;
-zero active assignments and zero hourly usage were independently checked.
+A100 80GB, driver 580.82.07, BF16, same fixed 256 targets and exact checkpoint.
+All three valid runs parsed 256/256; effective recent history was 4 through 8.
+Each pair below is p50 / p95 seconds, excluding the first cold request.
+
+Transformers exact 78/256 (30.46875%). Preprocess 0.543 / 2.002;
+encode 0.052 / 0.052; prefill 0.068 / 0.087; decode 0.695 / 0.868;
+generation wall 0.880 / 1.075; total wall 1.435 / 2.955.
+
+vLLM eager, caches off, exact 80/256 (31.25%), agreement 245/256 (95.703%).
+Preprocess 0.841 / 2.698; encode 0.039 / 0.045; prefill 0.078 / 0.083;
+decode 0.491 / 0.630; generation wall 0.736 / 0.887; total 1.546 / 3.462.
+
+vLLM graphs, caches off, exact 80/256 (31.25%), agreement 247/256 (96.484%).
+Preprocess 0.802 / 2.633; encode 0.047 / 0.053; prefill 0.070 / 0.081;
+decode 0.077 / 0.097; generation wall 0.334 / 0.364; total 1.133 / 2.985.
+Median total improved about 21%, but p95 did not improve. Generation-only
+improved about 2.63x. Components have different timing definitions above;
+medians are not additive. This is not bit-identical output parity.
+The first four complete sampled prompts passed native/HF expanded-token and
+normalized-pixel equality, max/mean delta zero. This is not all-256 pixel auditing.
+
+The graphs plus processor/prefix cache ablation FAILED all 256 requests with
+native P0/P1 multimodal cache-drift errors, empty output and no encoder calls.
+Its nominal 0.561s median total is an ERROR response time, not inference latency.
+Its prefill timestamps are invalid. Do not quote these as a speedup or embedding
+reuse. Preparing prompts with the renderer can advance its frontend cache without
+advancing the engine cache. Processor caching is now explicitly rejected until a
+corrected lifecycle passes the GPU gate. Prefix caching alone and encoder reuse
+were not isolated or validated; both caches default off; prefix caching is available only via explicit
+`--prefix-cache`, an unmeasured experimental combination. No deployment occurred.
+The benchmark cache ablation intentionally fails closed with that safety guard.
+
+35 local tests pass. All allocated runtimes were unassigned; final live balance
+84.70 CU, zero assignments and zero usage rate. Starting pre-retry balance was
+90.99 CU (6.29 CU used), original pre-task balance 91.11 CU. Several setup and
+instrumentation failures preceded the measured run; none are claimed as results.
+No FP8 or GPU LANCZOS substitution was enabled. Further GPU work needs approval.
