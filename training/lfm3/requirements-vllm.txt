@@ -1,0 +1,7 @@
+# Optional serving-only environment. Do NOT install over requirements.txt.
+# Keep vLLM's own Torch/CUDA/Transformers dependencies; training stays unchanged.
+vllm==0.34.0
+Pillow==12.0.0
+jinja2==3.1.6
+fastapi>=0.115,<1
+uvicorn>=0.30,<1

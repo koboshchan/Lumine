@@ -83,26 +83,33 @@ def encode_prompt(processor, config, sample):
             raise ValueError('Cannot satisfy history token budget')
 
 
+def load_checkpoint_processor(checkpoint):
+    """Validate the same policy, template and action IDs for every backend."""
+    from transformers import AutoProcessor
+    checkpoint = Path(checkpoint).resolve()
+    config = json.loads((checkpoint / 'training-policy.json').read_text())
+    expected_policy = json.loads((ROOT / 'config.json').read_text())
+    if config.get('action_special_tokens') is True:
+        expected_policy['action_special_tokens'] = True
+    if config != expected_policy:
+        raise ValueError('Checkpoint training policy does not match this code')
+    processor = AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=True)
+    if processor.chat_template != (ROOT / 'chat_template.jinja').read_text():
+        raise ValueError('Checkpoint template differs from exact training template')
+    if config.get('action_special_tokens'):
+        from action_tokens import ACTION_TOKENS
+        audit = json.loads((checkpoint / 'action-token-audit.json').read_text())
+        for token in ACTION_TOKENS:
+            if processor.tokenizer.encode(token, add_special_tokens=False) != [audit[token]['id']]:
+                raise ValueError('Checkpoint action token identity differs')
+    return processor, config
+
+
 class Backend:
     def __init__(self, checkpoint, device='cuda'):
         import torch
-        from transformers import AutoProcessor, AutoModelForImageTextToText
-        checkpoint = Path(checkpoint).resolve()
-        self.config = json.loads((checkpoint / 'training-policy.json').read_text())
-        expected_policy = json.loads((ROOT / 'config.json').read_text())
-        if self.config.get('action_special_tokens') is True:
-            expected_policy['action_special_tokens'] = True
-        if self.config != expected_policy:
-            raise ValueError('Checkpoint training policy does not match this code')
-        self.processor = AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=True)
-        if self.processor.chat_template != (ROOT / 'chat_template.jinja').read_text():
-            raise ValueError('Checkpoint template differs from exact training template')
-        if self.config.get('action_special_tokens'):
-            from action_tokens import ACTION_TOKENS
-            audit = json.loads((checkpoint / 'action-token-audit.json').read_text())
-            for token in ACTION_TOKENS:
-                if self.processor.tokenizer.encode(token, add_special_tokens=False) != [audit[token]['id']]:
-                    raise ValueError('Checkpoint action token identity differs')
+        from transformers import AutoModelForImageTextToText
+        self.processor, self.config = load_checkpoint_processor(checkpoint)
         self.device = device
         self.model = AutoModelForImageTextToText.from_pretrained(
             str(checkpoint), trust_remote_code=True,
