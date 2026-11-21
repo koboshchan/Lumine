@@ -83,7 +83,7 @@ class PixelFrames:
             batches = []
             for image in values:
                 digest = hashlib.sha256(image.tobytes()).digest()
-                key = (image.size, digest, signature)
+                key = (id(processor), image.size, digest, signature)
                 if key in self.items:
                     self.hits += 1
                     self.items.move_to_end(key)

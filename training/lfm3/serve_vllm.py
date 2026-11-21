@@ -50,7 +50,7 @@ class PromptBuilder:
     Do not reorder the trained prompt for cache hits. Notes, middle and recent
     history stay before current, byte-for-byte the training template. Sliding
     windows and tier/timestamp changes can invalidate KV prefix hits. Identical
-    frames still reuse native multimodal processor/encoder entries until eviction.
+    frames can reuse bounded, exact CPU pixel entries until eviction.
     """
     def __init__(self, processor, config, render, *, fast=False):
         self.processor, self.config, self.render = processor, config, render
@@ -145,7 +145,7 @@ class VLLMBackend:
         self.last_output = None
 
     def render(self, prompt):
-        # Native renderer expands image tokens and caches processing by content ID.
+        # Native renderer expands image tokens. Native processor caching stays off.
         # Passing a rendered string must not add a second BOS token.
         params = self.engine.renderer.default_cmpl_tok_params.with_kwargs(add_special_tokens=False)
         return self.engine.renderer.render_cmpl([prompt], params)[0]
@@ -163,7 +163,6 @@ class VLLMBackend:
                 skip_special_tokens=False, spaces_between_special_tokens=False)
             # Process pixels once via the public generation API. Native processor
             # cache stays off; our exact CPU pixel cache is independent of P0/P1.
-            # rather than submitting private engine inputs across release boundaries.
             output = self.engine.generate([raw], params, use_tqdm=False,
                 tokenization_kwargs={'add_special_tokens': False})[0]
             self.last_timings = {'preprocess_s': prepared - started,
