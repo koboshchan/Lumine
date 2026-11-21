@@ -51,3 +51,32 @@ def test_native_prompt_budget_and_pixels():
     assert raw['prompt'].count('[recent ') == len(effective['recent'])
     assert len(raw['multi_modal_uuids']['image']) == len(effective['recent']) + 1
     assert raw == builder.raw(effective)
+
+
+@pytest.mark.parametrize('extra', [
+    {'bootstrap_prob': float('nan')}, {'bootstrap_prob': -0.1},
+    {'bootstrap_prob': True}, {'bootstrap_seed': True},
+    {'bootstrap_seed': '42'},
+])
+def test_checkpoint_rejects_invalid_training_provenance(tmp_path, extra):
+    from serve import load_checkpoint_processor
+    config = json.loads((ROOT / 'config.json').read_text())
+    config.update(extra)
+    (tmp_path / 'training-policy.json').write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='bootstrap'):
+        load_checkpoint_processor(tmp_path)
+
+
+def test_checkpoint_accepts_valid_provenance_before_processor(tmp_path, monkeypatch):
+    from serve import load_checkpoint_processor
+    import transformers
+    config = json.loads((ROOT / 'config.json').read_text())
+    config.update(bootstrap_prob=0.1, bootstrap_seed=42)
+    (tmp_path / 'training-policy.json').write_text(json.dumps(config))
+    class ProcessorReached(Exception):
+        pass
+    def reached(*args, **kwargs):
+        raise ProcessorReached()
+    monkeypatch.setattr(transformers.AutoProcessor, 'from_pretrained', reached)
+    with pytest.raises(ProcessorReached):
+        load_checkpoint_processor(tmp_path)
